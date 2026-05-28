@@ -36,7 +36,10 @@ func TestFeedServiceGetFeedSortsAndPaginates(t *testing.T) {
 	feed.AddFeedItem(context.Background(), "user_123", model.FeedItem{MediaID: "middle", UserID: "user_123", CreatedAt: now.Add(-time.Minute)})
 	feed.AddFeedItem(context.Background(), "other", model.FeedItem{MediaID: "other", UserID: "other", CreatedAt: now.Add(time.Hour)})
 
-	resp := feed.GetFeed(context.Background(), "user_123", 2, 1)
+	resp, err := feed.GetFeed(context.Background(), "user_123", 2, 1)
+	if err != nil {
+		t.Fatalf("GetFeed returned error: %v", err)
+	}
 
 	if resp.Total != 3 {
 		t.Fatalf("Total = %d, want 3", resp.Total)
@@ -53,12 +56,18 @@ func TestFeedServicePaginationBoundaries(t *testing.T) {
 	feed := newTestFeedService(t)
 	feed.AddFeedItem(context.Background(), "user_123", model.FeedItem{MediaID: "media_1", UserID: "user_123", CreatedAt: time.Now().UTC()})
 
-	defaulted := feed.GetFeed(context.Background(), "user_123", 0, -1)
+	defaulted, err := feed.GetFeed(context.Background(), "user_123", 0, -1)
+	if err != nil {
+		t.Fatalf("GetFeed returned error: %v", err)
+	}
 	if defaulted.Limit != 20 || defaulted.Offset != 0 || len(defaulted.Items) != 1 {
 		t.Fatalf("defaulted response = %#v, want limit 20 offset 0 one item", defaulted)
 	}
 
-	pastEnd := feed.GetFeed(context.Background(), "user_123", 20, 10)
+	pastEnd, err := feed.GetFeed(context.Background(), "user_123", 20, 10)
+	if err != nil {
+		t.Fatalf("GetFeed returned error: %v", err)
+	}
 	if len(pastEnd.Items) != 0 {
 		t.Fatalf("past-end items = %v, want empty", pastEnd.Items)
 	}
@@ -77,7 +86,10 @@ func TestFeedServiceConcurrentWrites(t *testing.T) {
 	}
 	wg.Wait()
 
-	resp := feed.GetFeed(context.Background(), "user_123", 100, 0)
+	resp, err := feed.GetFeed(context.Background(), "user_123", 100, 0)
+	if err != nil {
+		t.Fatalf("GetFeed returned error: %v", err)
+	}
 	if resp.Total != 50 {
 		t.Fatalf("Total = %d, want 50", resp.Total)
 	}

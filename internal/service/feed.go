@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"instagram_clone/internal/model"
@@ -22,11 +23,10 @@ func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model
 	}
 }
 
-func (s *FeedService) GetFeed(ctx context.Context, userID string, limit, offset int) model.FeedResponse {
+func (s *FeedService) GetFeed(ctx context.Context, userID string, limit, offset int) (model.FeedResponse, error) {
 	resp, err := s.feed.GetFeed(ctx, userID, limit, offset)
 	if err != nil {
-		slog.Error("get feed from redis", "user_id", userID, "error", err)
-		return model.FeedResponse{Items: []model.FeedItem{}, Limit: limit, Offset: offset}
+		return model.FeedResponse{}, fmt.Errorf("get feed: %w", err)
 	}
-	return resp
+	return resp, nil
 }
