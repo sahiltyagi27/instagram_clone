@@ -31,15 +31,29 @@ services:
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic story-uploaded --partitions 1 --replication-factor 1
         wait
 
-  localstack:
-    image: localstack/localstack:3
+  minio:
+    image: minio/minio:latest
     ports:
-      - "4566:4566"
+      - "9000:9000"   # S3-compatible API
+      - "9001:9001"   # Browser UI — open http://localhost:9001
     environment:
-      SERVICES: s3
-      AWS_DEFAULT_REGION: us-east-1
-    volumes:
-      - "./init-scripts:/etc/localstack/init/ready.d"
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+
+  # Creates the instagram-media bucket on first startup.
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin; do
+        echo 'waiting for MinIO...'; sleep 2;
+      done;
+      /usr/bin/mc mb --ignore-existing local/instagram-media;
+      exit 0
+      "
 
   jaeger:
     image: jaegertracing/all-in-one:1.57
@@ -76,15 +90,16 @@ services:
       - "8080:8080"
     environment:
       AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
       S3_BUCKET: instagram-media
-      S3_ENDPOINT: http://localstack:4566
+      S3_ENDPOINT: http://minio:9000
       JWT_SECRET: dev-secret-do-not-use-in-prod
       KAFKA_BROKER: kafka:9092
       APP_ENV: dev
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       - kafka
-      - localstack
+      - minio
+      - createbuckets
       - jaeger

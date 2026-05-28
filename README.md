@@ -8,7 +8,7 @@ A Go microservice for Instagram-style media uploads. It supports JWT auth, S3 pr
 - Chi router
 - JWT auth with HS256
 - AWS SDK for Go v2
-- LocalStack S3 at `http://localstack:4566`
+- MinIO S3 at `http://minio:9000` (browser UI at `http://localhost:9001`)
 - S3 bucket: `instagram-media`
 - Kafka and Zookeeper through Docker Compose
 - In-memory stores for users, media, stories, and feeds
@@ -19,7 +19,11 @@ A Go microservice for Instagram-style media uploads. It supports JWT auth, S3 pr
 docker compose up --build
 ```
 
-The LocalStack container creates the `instagram-media` bucket on startup. Kafka creates the `media-uploaded` and `story-uploaded` topics on startup.
+The `createbuckets` container creates the `instagram-media` bucket on startup. Kafka creates the `media-uploaded` and `story-uploaded` topics on startup.
+
+### S3 Browser UI
+
+Open **http://localhost:9001** and log in with `minioadmin` / `minioadmin` to browse buckets and objects visually.
 
 ## Auth
 
@@ -74,7 +78,7 @@ Example response:
 ```json
 {
   "media_id": "1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012",
-  "upload_url": "http://localstack:4566/instagram-media/users/user_123/...",
+  "upload_url": "http://minio:9000/instagram-media/users/user_123/...",
   "s3_bucket": "instagram-media",
   "s3_key": "users/user_123/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012/sunset.jpg",
   "expires_in": 900
@@ -86,12 +90,12 @@ Example response:
 Use the `upload_url` returned by the first endpoint:
 
 ```sh
-curl --resolve localstack:4566:127.0.0.1 -X PUT "$UPLOAD_URL" \
+curl --resolve minio:9000:127.0.0.1 -X PUT "$UPLOAD_URL" \
   -H "Content-Type: image/jpeg" \
   --data-binary @sunset.jpg
 ```
 
-The `--resolve` flag lets curl use the Docker-internal `localstack` hostname from the signed URL while sending traffic to your local machine.
+The `--resolve` flag lets curl use the Docker-internal `minio` hostname from the signed URL while sending traffic to your local machine.
 
 ### Confirm Media Upload
 
@@ -170,10 +174,10 @@ curl -s "http://localhost:8080/feed/user_id_from_auth_response?limit=20&offset=0
 
 ```text
 AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=test
-AWS_SECRET_ACCESS_KEY=test
+AWS_ACCESS_KEY_ID=minioadmin
+AWS_SECRET_ACCESS_KEY=minioadmin
 S3_BUCKET=instagram-media
-S3_ENDPOINT=http://localstack:4566
+S3_ENDPOINT=http://minio:9000
 JWT_SECRET=dev-secret-do-not-use-in-prod
 KAFKA_BROKER=kafka:9092
 APP_ENV=dev
@@ -184,7 +188,7 @@ APP_ENV=dev
 - Metadata is stored in memory, so restarting the Go service clears users, media records, stories, and feeds.
 - The service uses `user_id` from the JWT for protected upload, media confirm, story write routes, and user-scoped feed/story reads.
 - `JWT_SECRET` falls back to a development secret only when `APP_ENV` is empty, `dev`, `local`, or `test`.
-- S3 credentials come from the AWS environment/default credential chain. Docker Compose sets LocalStack test credentials.
+- S3 credentials are set via environment variables. Docker Compose uses the MinIO root credentials.
 - JSON errors use this shape:
 
 ```json

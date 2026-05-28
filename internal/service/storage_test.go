@@ -45,8 +45,8 @@ func TestGeneratePresignedUploadURLStoresPendingMedia(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upload URL is not parseable: %v", err)
 	}
-	if parsedURL.Scheme != "http" || parsedURL.Host != "localhost:4566" {
-		t.Fatalf("upload URL host = %q://%q, want http://localhost:4566", parsedURL.Scheme, parsedURL.Host)
+	if parsedURL.Scheme != "http" || parsedURL.Host != "localhost:9000" {
+		t.Fatalf("upload URL host = %q://%q, want http://localhost:9000", parsedURL.Scheme, parsedURL.Host)
 	}
 
 	media, err := storage.GetMedia(context.Background(), resp.MediaID)
@@ -156,10 +156,10 @@ func TestNewID(t *testing.T) {
 
 func newTestStorage(t *testing.T) *Storage {
 	t.Helper()
-	t.Setenv("AWS_ACCESS_KEY_ID", "test")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-	storage, err := NewStorage(context.Background(), "http://localhost:4566", "us-east-1", "instagram-media-test")
+	storage, err := NewStorage(context.Background(), "http://localhost:9000", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
