@@ -44,7 +44,7 @@ func main() {
 
 	storage, err := service.NewStorage(
 		ctx,
-		envOrDefault("S3_ENDPOINT", "http://localstack:4566"),
+		envOrDefault("S3_ENDPOINT", "http://minio:9000"),
 		envOrDefault("AWS_REGION", "us-east-1"),
 		envOrDefault("S3_BUCKET", "instagram-media"),
 	)
