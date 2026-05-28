@@ -29,7 +29,6 @@ type AuthService struct {
 }
 
 type Claims struct {
-	UserID string `json:"user_id"`
 	jwt.RegisteredClaims
 }
 
@@ -44,7 +43,7 @@ func NewAuthService(secret string) *AuthService {
 func (s *AuthService) Signup(req model.SignupRequest) (*model.AuthResponse, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	username := strings.TrimSpace(req.Username)
-	password := strings.TrimSpace(req.Password)
+	password := req.Password
 
 	if email == "" || username == "" || password == "" {
 		return nil, ErrInvalidCredentials
@@ -86,7 +85,7 @@ func (s *AuthService) Signup(req model.SignupRequest) (*model.AuthResponse, erro
 
 func (s *AuthService) Login(req model.LoginRequest) (*model.AuthResponse, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	password := strings.TrimSpace(req.Password)
+	password := req.Password
 	if email == "" || password == "" {
 		return nil, ErrInvalidCredentials
 	}
@@ -128,7 +127,6 @@ func CheckPassword(hash, password string) bool {
 
 func GenerateJWT(secret, userID string) (string, error) {
 	claims := Claims{
-		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(jwtExpiry)),
@@ -156,10 +154,10 @@ func ValidateJWT(secret, tokenString string) (string, error) {
 	}
 
 	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid || claims.UserID == "" {
+	if !ok || !token.Valid || claims.Subject == "" {
 		return "", ErrInvalidCredentials
 	}
-	return claims.UserID, nil
+	return claims.Subject, nil
 }
 
 func publicUser(user model.User) model.User {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"instagram_clone/internal/model"
 )
@@ -64,5 +65,55 @@ func TestStoryServiceNotFoundPaths(t *testing.T) {
 	_, err = stories.GetStory(context.Background(), "missing")
 	if !errors.Is(err, ErrStoryNotFound) {
 		t.Fatalf("GetStory error = %v, want ErrStoryNotFound", err)
+	}
+}
+
+func TestStoryServicePurgeExpiredRemovesPendingAndExpiredStories(t *testing.T) {
+	stories := NewStoryService(newTestStorage(t))
+	now := time.Now().UTC()
+
+	stories.stories["pending_old"] = model.Story{
+		ID:        "pending_old",
+		UserID:    "user_123",
+		CreatedAt: now.Add(-PendingStoryTTL - time.Minute),
+	}
+	stories.stories["zero_created"] = model.Story{
+		ID:     "zero_created",
+		UserID: "user_123",
+	}
+	stories.stories["pending_new"] = model.Story{
+		ID:        "pending_new",
+		UserID:    "user_123",
+		CreatedAt: now.Add(-time.Minute),
+	}
+	stories.stories["expired"] = model.Story{
+		ID:        "expired",
+		UserID:    "user_123",
+		CreatedAt: now.Add(-StoryTTL),
+		ExpiresAt: now.Add(-time.Minute),
+	}
+	stories.stories["active"] = model.Story{
+		ID:        "active",
+		UserID:    "user_123",
+		CreatedAt: now.Add(-time.Minute),
+		ExpiresAt: now.Add(time.Hour),
+	}
+
+	stories.purgeExpired(now)
+
+	if _, ok := stories.stories["pending_old"]; ok {
+		t.Fatal("expected old pending story to be purged")
+	}
+	if _, ok := stories.stories["zero_created"]; ok {
+		t.Fatal("expected zero-created story to be purged")
+	}
+	if _, ok := stories.stories["expired"]; ok {
+		t.Fatal("expected expired story to be purged")
+	}
+	if _, ok := stories.stories["pending_new"]; !ok {
+		t.Fatal("expected fresh pending story to remain")
+	}
+	if _, ok := stories.stories["active"]; !ok {
+		t.Fatal("expected active story to remain")
 	}
 }

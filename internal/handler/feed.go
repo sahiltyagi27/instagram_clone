@@ -30,6 +30,10 @@ func (h *FeedHandler) getFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "user id is required")
 		return
 	}
+	if !requestUserMatches(r, userID) {
+		writeError(w, http.StatusForbidden, "cannot access another user's feed")
+		return
+	}
 
 	limit := queryInt(r, "limit", 20)
 	offset := queryInt(r, "offset", 0)

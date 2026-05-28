@@ -83,8 +83,23 @@ func TestFeedHandler(t *testing.T) {
 	}
 }
 
+func TestFeedHandlerRejectsOtherUsers(t *testing.T) {
+	router := NewFeedHandler(service.NewFeedService()).Router()
+
+	rec := performRequest(router, http.MethodGet, "/other_user", "")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "cannot access another user's feed")
+}
+
 func TestStoryHandlerGenerateAndConfirm(t *testing.T) {
-	storage, err := service.NewStorage(t.Context(), "http://localhost:4566", "us-east-1", "instagram-media-test")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	// No live S3 server is needed: PresignPutObject is computed locally by the
+	// AWS SDK (no network call) and ConfirmUpload is purely in-memory.
+	storage, err := service.NewStorage(t.Context(), "http://s3.test:4566", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}

@@ -41,6 +41,10 @@ func UserIDFromContext(ctx context.Context) (string, bool) {
 	return userID, ok && userID != ""
 }
 
+func ContextWithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

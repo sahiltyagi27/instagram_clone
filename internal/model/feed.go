@@ -3,10 +3,12 @@ package model
 import "time"
 
 type FeedItem struct {
-	MediaID      string    `json:"media_id"`
-	UserID       string    `json:"user_id"`
-	S3Key        string    `json:"s3_key"`
-	ThumbnailURL string    `json:"thumbnail_url"`
+	MediaID      string `json:"media_id"`
+	UserID       string `json:"user_id"`
+	S3Key        string `json:"s3_key"`
+	ThumbnailKey string `json:"thumbnail_key"`
+	// TODO: populate ThumbnailURL with a CDN or public HTTP URL once a serving strategy is in place.
+	ThumbnailURL string    `json:"thumbnail_url,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

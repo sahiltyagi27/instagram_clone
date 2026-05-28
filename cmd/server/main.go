@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"instagram_clone/internal/handler"
@@ -16,7 +19,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	storage, err := service.NewStorage(
 		ctx,
@@ -28,7 +32,10 @@ func main() {
 		log.Fatalf("initialize storage: %v", err)
 	}
 
-	jwtSecret := envOrDefault("JWT_SECRET", "dev-secret-do-not-use-in-prod")
+	jwtSecret, err := jwtSecretFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	kafkaBroker := envOrDefault("KAFKA_BROKER", "kafka:9092")
 
 	authService := service.NewAuthService(jwtSecret)
@@ -59,12 +66,42 @@ func main() {
 		Addr:              ":8080",
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Println("photo/video upload service listening on :8080")
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server failed: %v", err)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Fatalf("server shutdown failed: %v", err)
+		}
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server failed: %v", err)
+		}
 	}
+}
+
+func jwtSecretFromEnv() (string, error) {
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		return secret, nil
+	}
+
+	env := os.Getenv("APP_ENV")
+	if env == "" || env == "dev" || env == "local" || env == "test" {
+		return "dev-secret-do-not-use-in-prod", nil
+	}
+
+	return "", errors.New("JWT_SECRET is required outside dev/local/test")
 }
 
 func envOrDefault(key, fallback string) string {

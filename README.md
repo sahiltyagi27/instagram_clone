@@ -159,6 +159,7 @@ curl -s http://localhost:8080/stories/user/user_id_from_auth_response \
 ## Feed
 
 The Kafka consumer adds media upload events into an in-memory feed after media processing succeeds.
+Feed items include `thumbnail_key` for the processed S3 object key. They do not expose a public URL yet.
 
 ```sh
 curl -s "http://localhost:8080/feed/user_id_from_auth_response?limit=20&offset=0" \
@@ -169,16 +170,21 @@ curl -s "http://localhost:8080/feed/user_id_from_auth_response?limit=20&offset=0
 
 ```text
 AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
 S3_BUCKET=instagram-media
 S3_ENDPOINT=http://localstack:4566
 JWT_SECRET=dev-secret-do-not-use-in-prod
 KAFKA_BROKER=kafka:9092
+APP_ENV=dev
 ```
 
 ## Notes
 
 - Metadata is stored in memory, so restarting the Go service clears users, media records, stories, and feeds.
-- The service uses `user_id` from the JWT for protected upload, media confirm, and story write routes.
+- The service uses `user_id` from the JWT for protected upload, media confirm, story write routes, and user-scoped feed/story reads.
+- `JWT_SECRET` falls back to a development secret only when `APP_ENV` is empty, `dev`, `local`, or `test`.
+- S3 credentials come from the AWS environment/default credential chain. Docker Compose sets LocalStack test credentials.
 - JSON errors use this shape:
 
 ```json

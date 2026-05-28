@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -38,7 +38,6 @@ func NewStorage(ctx context.Context, endpoint, region, bucket string) (*Storage,
 	cfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
@@ -133,6 +132,14 @@ func (s *Storage) GetMedia(_ context.Context, mediaID string) (*model.Media, err
 
 func (s *Storage) Bucket() string {
 	return s.bucket
+}
+
+func (s *Storage) ObjectURL(key string) string {
+	return (&url.URL{
+		Scheme: "s3",
+		Host:   s.bucket,
+		Path:   "/" + strings.TrimLeft(key, "/"),
+	}).String()
 }
 
 func (s *Storage) PresignPutObject(ctx context.Context, key, contentType string) (string, error) {

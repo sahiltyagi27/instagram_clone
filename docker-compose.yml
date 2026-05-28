@@ -47,10 +47,13 @@ services:
       - "8080:8080"
     environment:
       AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       S3_BUCKET: instagram-media
       S3_ENDPOINT: http://localstack:4566
       JWT_SECRET: dev-secret-do-not-use-in-prod
       KAFKA_BROKER: kafka:9092
+      APP_ENV: dev
     depends_on:
       - kafka
       - localstack

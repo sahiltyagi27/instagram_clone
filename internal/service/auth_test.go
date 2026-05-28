@@ -45,6 +45,25 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 	}
 }
 
+func TestAuthServicePreservesPasswordWhitespace(t *testing.T) {
+	auth := NewAuthService("test-secret")
+
+	if _, err := auth.Signup(model.SignupRequest{
+		Username: "sahil",
+		Email:    "sahil@example.com",
+		Password: " secret123 ",
+	}); err != nil {
+		t.Fatalf("Signup returned error: %v", err)
+	}
+
+	if _, err := auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: "secret123"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("login without spaces error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: " secret123 "}); err != nil {
+		t.Fatalf("login with spaces returned error: %v", err)
+	}
+}
+
 func TestAuthServiceRejectsDuplicateAndInvalidLogin(t *testing.T) {
 	auth := NewAuthService("test-secret")
 	if _, err := auth.Signup(model.SignupRequest{Username: "sahil", Email: "sahil@example.com", Password: "secret123"}); err != nil {

@@ -55,10 +55,6 @@ func (p *KafkaProducer) Close() error {
 	return p.writer.Close()
 }
 
-func (p *KafkaProducer) close() error {
-	return p.Close()
-}
-
 func (p *KafkaProducer) publish(ctx context.Context, topic, key string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
