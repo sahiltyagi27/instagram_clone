@@ -28,13 +28,16 @@ var ErrMediaNotFound = errors.New("media not found")
 type Storage struct {
 	bucket    string
 	client    *s3.Client
-	presigner *s3.PresignClient
+	presigner *s3.PresignClient // built from publicEndpoint — URLs work from outside Docker
 
 	mu    sync.RWMutex
 	media map[string]model.Media
 }
 
-func NewStorage(ctx context.Context, endpoint, region, bucket string) (*Storage, error) {
+// NewStorage creates a Storage that uses endpoint for internal S3 operations (get/put)
+// and publicEndpoint for generating presigned URLs returned to clients.
+// Pass an empty publicEndpoint to fall back to endpoint for both (e.g. in tests).
+func NewStorage(ctx context.Context, endpoint, publicEndpoint, region, bucket string) (*Storage, error) {
 	cfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(region),
@@ -43,15 +46,25 @@ func NewStorage(ctx context.Context, endpoint, region, bucket string) (*Storage,
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
+	// Internal client — used for GetObject / PutObject inside the service.
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = true
+	})
+
+	// Presign client — URLs must be reachable by the caller (e.g. localhost:9000 from host).
+	if publicEndpoint == "" {
+		publicEndpoint = endpoint
+	}
+	publicClient := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(publicEndpoint)
 		o.UsePathStyle = true
 	})
 
 	return &Storage{
 		bucket:    bucket,
 		client:    client,
-		presigner: s3.NewPresignClient(client),
+		presigner: s3.NewPresignClient(publicClient),
 		media:     make(map[string]model.Media),
 	}, nil
 }

@@ -213,7 +213,7 @@ func newTestRouter(t *testing.T) http.Handler {
 	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-	storage, err := service.NewStorage(t.Context(), "http://localhost:9000", "us-east-1", "instagram-media-test")
+	storage, err := service.NewStorage(t.Context(), "http://localhost:9000", "", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
