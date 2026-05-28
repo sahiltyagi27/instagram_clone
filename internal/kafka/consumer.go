@@ -96,6 +96,8 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 			log.Printf("decode story uploaded event: %v", err)
 			continue
 		}
+		// TODO: Replace this acknowledgement log with story-side processing when
+		// story fanout, notifications, or analytics are added.
 		log.Printf("story uploaded event consumed: story_id=%s user_id=%s s3_key=%s", event.StoryID, event.UserID, event.S3Key)
 	}
 }
@@ -103,8 +105,5 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 func (c *KafkaConsumer) Close() error {
 	mediaErr := c.mediaReader.Close()
 	storyErr := c.storyReader.Close()
-	if mediaErr != nil {
-		return mediaErr
-	}
-	return storyErr
+	return errors.Join(mediaErr, storyErr)
 }

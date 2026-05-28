@@ -135,8 +135,11 @@ func (s *StoryService) purgeExpired(now time.Time) {
 }
 
 func storyExpired(story model.Story, now time.Time) bool {
+	if story.CreatedAt.IsZero() {
+		return true
+	}
 	if story.ExpiresAt.IsZero() {
-		return !story.CreatedAt.IsZero() && !story.CreatedAt.Add(PendingStoryTTL).After(now)
+		return !story.CreatedAt.Add(PendingStoryTTL).After(now)
 	}
 	return !story.ExpiresAt.After(now)
 }

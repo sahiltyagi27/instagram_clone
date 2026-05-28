@@ -97,7 +97,7 @@ func TestFeedHandlerRejectsOtherUsers(t *testing.T) {
 func TestStoryHandlerGenerateAndConfirm(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	storage, err := service.NewStorage(t.Context(), "http://localhost:4566", "us-east-1", "instagram-media-test")
+	storage, err := service.NewStorage(t.Context(), "http://s3.test:4566", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}

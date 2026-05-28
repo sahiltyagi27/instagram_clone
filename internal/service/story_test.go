@@ -77,6 +77,10 @@ func TestStoryServicePurgeExpiredRemovesPendingAndExpiredStories(t *testing.T) {
 		UserID:    "user_123",
 		CreatedAt: now.Add(-PendingStoryTTL - time.Minute),
 	}
+	stories.stories["zero_created"] = model.Story{
+		ID:     "zero_created",
+		UserID: "user_123",
+	}
 	stories.stories["pending_new"] = model.Story{
 		ID:        "pending_new",
 		UserID:    "user_123",
@@ -99,6 +103,9 @@ func TestStoryServicePurgeExpiredRemovesPendingAndExpiredStories(t *testing.T) {
 
 	if _, ok := stories.stories["pending_old"]; ok {
 		t.Fatal("expected old pending story to be purged")
+	}
+	if _, ok := stories.stories["zero_created"]; ok {
+		t.Fatal("expected zero-created story to be purged")
 	}
 	if _, ok := stories.stories["expired"]; ok {
 		t.Fatal("expected expired story to be purged")
