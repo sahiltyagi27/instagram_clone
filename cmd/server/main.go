@@ -75,6 +75,9 @@ func main() {
 	mediaStore := store.NewMediaStore(pgPool)
 	storyStore := store.NewStoryStore(pgPool)
 	feedStore := store.NewFeedStore(redisClient)
+	followStore := store.NewFollowStore(pgPool)
+	likeStore := store.NewLikeStore(pgPool)
+	commentStore := store.NewCommentStore(pgPool)
 
 	// ── S3 / MinIO ────────────────────────────────────────────────────────────
 	storage, err := service.NewStorage(
@@ -100,7 +103,10 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authService := service.NewAuthService(jwtSecret, userStore)
 	storyService := service.NewStoryService(storage, storyStore)
-	feedService := service.NewFeedService(feedStore)
+	followService := service.NewFollowService(followStore)
+	feedService := service.NewFeedService(feedStore, followStore)
+	likeService := service.NewLikeService(likeStore)
+	commentService := service.NewCommentService(commentStore)
 	mediaProcessor := service.NewMediaProcessor(storage)
 
 	// ── Kafka ─────────────────────────────────────────────────────────────────
@@ -134,6 +140,9 @@ func main() {
 		r.Use(middleware.RateLimit(rateLimiter, "write", redis_rate.PerMinute(20)))
 		r.Mount("/", handler.NewUploadHandler(storage, producer).Router())
 		r.Mount("/stories", handler.NewStoryHandler(storyService, producer).Router())
+		r.Mount("/follows", handler.NewFollowHandler(followService).Router())
+		r.Mount("/likes", handler.NewLikeHandler(likeService).Router())
+		r.Mount("/comments", handler.NewCommentHandler(commentService).Router())
 	})
 
 	// Read operations: more lenient limit (60 req/min per user).

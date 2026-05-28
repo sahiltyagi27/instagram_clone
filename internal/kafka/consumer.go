@@ -119,8 +119,8 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			if err := c.processor.Process(msgCtx, event.S3Key, event.MediaType); err != nil {
 				return fmt.Errorf("process media: %w", err)
 			}
-			if err := c.feed.AddFeedItem(msgCtx, event.UserID, feedItem); err != nil {
-				return fmt.Errorf("index feed item: %w", err)
+			if err := c.feed.FanoutFeedItem(msgCtx, event.UserID, feedItem); err != nil {
+				return fmt.Errorf("fan out feed item: %w", err)
 			}
 			return nil
 		})

@@ -113,7 +113,7 @@ func TestAuthHandlerValidationAndConflict(t *testing.T) {
 func TestFeedHandler(t *testing.T) {
 	client := newTestRedisClient(t)
 	feedStore := store.NewFeedStore(client)
-	feedSvc := service.NewFeedService(feedStore)
+	feedSvc := service.NewFeedService(feedStore, nil)
 
 	// Seed one item directly via the service.
 	feedSvc.AddFeedItem(context.Background(), "user_123", model.FeedItem{
@@ -139,7 +139,7 @@ func TestFeedHandler(t *testing.T) {
 
 func TestFeedHandlerRejectsOtherUsers(t *testing.T) {
 	client := newTestRedisClient(t)
-	router := NewFeedHandler(service.NewFeedService(store.NewFeedStore(client))).Router()
+	router := NewFeedHandler(service.NewFeedService(store.NewFeedStore(client), nil)).Router()
 
 	rec := performRequest(router, http.MethodGet, "/other_user", "")
 
