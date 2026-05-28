@@ -35,7 +35,6 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 
 	req.Username = strings.TrimSpace(req.Username)
 	req.Email = strings.TrimSpace(req.Email)
-	req.Password = strings.TrimSpace(req.Password)
 	if req.Username == "" || req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "username, email, and password are required")
 		return
@@ -62,7 +61,6 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Email = strings.TrimSpace(req.Email)
-	req.Password = strings.TrimSpace(req.Password)
 	if req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "email and password are required")
 		return

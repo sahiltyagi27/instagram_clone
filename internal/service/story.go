@@ -12,7 +12,10 @@ import (
 	"instagram_clone/internal/model"
 )
 
-const StoryTTL = 24 * time.Hour
+const (
+	StoryTTL        = 24 * time.Hour
+	PendingStoryTTL = 30 * time.Minute
+)
 
 var ErrStoryNotFound = errors.New("story not found")
 
@@ -48,7 +51,7 @@ func (s *StoryService) GeneratePresignedURL(ctx context.Context, req model.Story
 		ID:        storyID,
 		UserID:    req.UserID,
 		S3Key:     key,
-		URL:       uploadURL,
+		URL:       s.storage.ObjectURL(key),
 		CreatedAt: now,
 	}
 
@@ -132,7 +135,10 @@ func (s *StoryService) purgeExpired(now time.Time) {
 }
 
 func storyExpired(story model.Story, now time.Time) bool {
-	return !story.ExpiresAt.IsZero() && !story.ExpiresAt.After(now)
+	if story.ExpiresAt.IsZero() {
+		return !story.CreatedAt.IsZero() && !story.CreatedAt.Add(PendingStoryTTL).After(now)
+	}
+	return !story.ExpiresAt.After(now)
 }
 
 func storyActive(story model.Story, now time.Time) bool {

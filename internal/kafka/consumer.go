@@ -14,17 +14,26 @@ import (
 )
 
 type KafkaConsumer struct {
-	reader    *kafka.Reader
-	processor *service.MediaProcessor
-	feed      *service.FeedService
+	mediaReader *kafka.Reader
+	storyReader *kafka.Reader
+	processor   *service.MediaProcessor
+	feed        *service.FeedService
 }
 
 func NewKafkaConsumer(broker string, processor *service.MediaProcessor, feed *service.FeedService) *KafkaConsumer {
 	return &KafkaConsumer{
-		reader: kafka.NewReader(kafka.ReaderConfig{
+		mediaReader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:        []string{broker},
 			Topic:          MediaUploadedTopic,
 			GroupID:        "instagram-media-processor",
+			MinBytes:       1,
+			MaxBytes:       10e6,
+			CommitInterval: time.Second,
+		}),
+		storyReader: kafka.NewReader(kafka.ReaderConfig{
+			Brokers:        []string{broker},
+			Topic:          StoryUploadedTopic,
+			GroupID:        "instagram-story-events",
 			MinBytes:       1,
 			MaxBytes:       10e6,
 			CommitInterval: time.Second,
@@ -35,8 +44,13 @@ func NewKafkaConsumer(broker string, processor *service.MediaProcessor, feed *se
 }
 
 func (c *KafkaConsumer) Start(ctx context.Context) {
+	go c.consumeStories(ctx)
+	c.consumeMedia(ctx)
+}
+
+func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 	for {
-		msg, err := c.reader.ReadMessage(ctx)
+		msg, err := c.mediaReader.ReadMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
@@ -60,12 +74,37 @@ func (c *KafkaConsumer) Start(ctx context.Context) {
 			MediaID:      event.MediaID,
 			UserID:       event.UserID,
 			S3Key:        event.S3Key,
-			ThumbnailURL: event.S3Key + "/thumb",
+			ThumbnailKey: event.S3Key + "/thumb",
 			CreatedAt:    event.CreatedAt,
 		})
 	}
 }
 
+func (c *KafkaConsumer) consumeStories(ctx context.Context) {
+	for {
+		msg, err := c.storyReader.ReadMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			log.Printf("read story kafka message: %v", err)
+			continue
+		}
+
+		var event model.StoryUploadedEvent
+		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			log.Printf("decode story uploaded event: %v", err)
+			continue
+		}
+		log.Printf("story uploaded event consumed: story_id=%s user_id=%s s3_key=%s", event.StoryID, event.UserID, event.S3Key)
+	}
+}
+
 func (c *KafkaConsumer) Close() error {
-	return c.reader.Close()
+	mediaErr := c.mediaReader.Close()
+	storyErr := c.storyReader.Close()
+	if mediaErr != nil {
+		return mediaErr
+	}
+	return storyErr
 }

@@ -156,6 +156,8 @@ func TestNewID(t *testing.T) {
 
 func newTestStorage(t *testing.T) *Storage {
 	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 	storage, err := NewStorage(context.Background(), "http://localhost:4566", "us-east-1", "instagram-media-test")
 	if err != nil {

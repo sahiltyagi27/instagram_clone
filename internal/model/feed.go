@@ -6,7 +6,8 @@ type FeedItem struct {
 	MediaID      string    `json:"media_id"`
 	UserID       string    `json:"user_id"`
 	S3Key        string    `json:"s3_key"`
-	ThumbnailURL string    `json:"thumbnail_url"`
+	ThumbnailKey string    `json:"thumbnail_key"`
+	ThumbnailURL string    `json:"thumbnail_url,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

@@ -41,7 +41,12 @@ func (h *UploadHandler) createPresignedURL(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	req.UserID = userIDFromRequest(r, req.UserID)
+	var ok bool
+	req.UserID, ok = userIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "missing authenticated user")
+		return
+	}
 	req.FileName = strings.TrimSpace(req.FileName)
 	req.ContentType = strings.TrimSpace(req.ContentType)
 
@@ -70,7 +75,12 @@ func (h *UploadHandler) confirmMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.UserID = userIDFromRequest(r, req.UserID)
+	var ok bool
+	req.UserID, ok = userIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "missing authenticated user")
+		return
+	}
 	req.MediaID = strings.TrimSpace(req.MediaID)
 	if req.UserID == "" || req.MediaID == "" {
 		writeError(w, http.StatusBadRequest, "user_id and media_id are required")

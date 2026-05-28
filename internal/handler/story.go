@@ -42,7 +42,12 @@ func (h *StoryHandler) createPresignedURL(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	req.UserID = userIDFromRequest(r, req.UserID)
+	var ok bool
+	req.UserID, ok = userIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "missing authenticated user")
+		return
+	}
 	req.FileName = strings.TrimSpace(req.FileName)
 	req.ContentType = strings.TrimSpace(req.ContentType)
 	if req.UserID == "" || req.FileName == "" || req.ContentType == "" {
@@ -66,7 +71,12 @@ func (h *StoryHandler) confirmStory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.UserID = userIDFromRequest(r, req.UserID)
+	var ok bool
+	req.UserID, ok = userIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "missing authenticated user")
+		return
+	}
 	req.StoryID = strings.TrimSpace(req.StoryID)
 	if req.UserID == "" || req.StoryID == "" {
 		writeError(w, http.StatusBadRequest, "user_id and story_id are required")
@@ -119,13 +129,22 @@ func (h *StoryHandler) getStoriesByUser(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "user id is required")
 		return
 	}
+	if !requestUserMatches(r, userID) {
+		writeError(w, http.StatusForbidden, "cannot access another user's stories")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, h.stories.GetActiveStoriesByUser(r.Context(), userID))
 }
 
-func userIDFromRequest(r *http.Request, fallback string) string {
+func userIDFromRequest(r *http.Request) (string, bool) {
 	if userID, ok := middleware.UserIDFromContext(r.Context()); ok {
-		return userID
+		return userID, true
 	}
-	return strings.TrimSpace(fallback)
+	return "", false
+}
+
+func requestUserMatches(r *http.Request, userID string) bool {
+	authenticatedUserID, ok := userIDFromRequest(r)
+	return ok && authenticatedUserID == userID
 }

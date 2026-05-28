@@ -8,9 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"instagram_clone/internal/middleware"
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/service"
 )
+
+const testJWTSecret = "test-secret"
 
 func TestCreatePresignedURL(t *testing.T) {
 	router := newTestRouter(t)
@@ -75,7 +78,7 @@ func TestCreatePresignedURLValidation(t *testing.T) {
 			name: "missing required fields",
 			body: `{
 				"user_id": "",
-				"file_name": "sunset.jpg",
+				"file_name": "",
 				"content_type": "image/jpeg",
 				"media_type": "photo"
 			}`,
@@ -207,6 +210,8 @@ func TestGetMediaNotFound(t *testing.T) {
 
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 	storage, err := service.NewStorage(t.Context(), "http://localhost:4566", "us-east-1", "instagram-media-test")
 	if err != nil {
@@ -243,6 +248,7 @@ func performRequest(handler http.Handler, method, path, body string) *httptest.R
 
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(middleware.ContextWithUserID(req.Context(), "user_123"))
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
