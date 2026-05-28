@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"instagram_clone/internal/handler"
+	appkafka "instagram_clone/internal/kafka"
+	"instagram_clone/internal/middleware"
 	"instagram_clone/internal/service"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func main() {
@@ -24,9 +28,36 @@ func main() {
 		log.Fatalf("initialize storage: %v", err)
 	}
 
+	jwtSecret := envOrDefault("JWT_SECRET", "dev-secret-do-not-use-in-prod")
+	kafkaBroker := envOrDefault("KAFKA_BROKER", "kafka:9092")
+
+	authService := service.NewAuthService(jwtSecret)
+	storyService := service.NewStoryService(storage)
+	feedService := service.NewFeedService()
+	mediaProcessor := service.NewMediaProcessor(storage)
+
+	producer := appkafka.NewKafkaProducer(kafkaBroker)
+	defer producer.Close()
+
+	consumer := appkafka.NewKafkaConsumer(kafkaBroker, mediaProcessor, feedService)
+	defer consumer.Close()
+
+	go storyService.StartExpiryWorker(ctx)
+	go consumer.Start(ctx)
+
+	router := chi.NewRouter()
+	router.Mount("/auth", handler.NewAuthHandler(authService).Router())
+
+	router.Group(func(r chi.Router) {
+		r.Use(middleware.JWT(jwtSecret))
+		r.Mount("/", handler.NewUploadHandler(storage, producer).Router())
+		r.Mount("/stories", handler.NewStoryHandler(storyService, producer).Router())
+		r.Mount("/feed", handler.NewFeedHandler(feedService).Router())
+	})
+
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           handler.NewUploadHandler(storage).Router(),
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

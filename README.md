@@ -1,26 +1,17 @@
 # Instagram Clone Upload Service
 
-A small Go microservice for generating S3 presigned upload URLs, confirming completed uploads, and fetching in-memory media metadata.
+A Go microservice for Instagram-style media uploads. It supports JWT auth, S3 presigned uploads, media confirmation events through Kafka, 24-hour stories, image variant processing, and an in-memory feed.
 
 ## Stack
 
 - Go HTTP service on port `8080`
 - Chi router
+- JWT auth with HS256
 - AWS SDK for Go v2
 - LocalStack S3 at `http://localstack:4566`
 - S3 bucket: `instagram-media`
-
-## Project Structure
-
-```text
-cmd/server/main.go
-internal/model/media.go
-internal/service/storage.go
-internal/handler/upload.go
-docker-compose.yml
-Dockerfile
-init-scripts/create-bucket.sh
-```
+- Kafka and Zookeeper through Docker Compose
+- In-memory stores for users, media, stories, and feeds
 
 ## Setup
 
@@ -28,17 +19,50 @@ init-scripts/create-bucket.sh
 docker compose up --build
 ```
 
-The LocalStack container creates the `instagram-media` bucket on startup.
+The LocalStack container creates the `instagram-media` bucket on startup. Kafka creates the `media-uploaded` and `story-uploaded` topics on startup.
 
-## Endpoints
+## Auth
+
+All routes except `POST /auth/signup` and `POST /auth/login` require a Bearer token.
+
+### Signup
+
+```sh
+curl -s -X POST http://localhost:8080/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "sahil",
+    "email": "sahil@example.com",
+    "password": "secret123"
+  }'
+```
+
+Save the token:
+
+```sh
+TOKEN="paste-token-here"
+```
+
+### Login
+
+```sh
+curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "sahil@example.com",
+    "password": "secret123"
+  }'
+```
+
+## Media Uploads
 
 ### Generate a Presigned Upload URL
 
 ```sh
 curl -s -X POST http://localhost:8080/presigned-url \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "user_123",
     "file_name": "sunset.jpg",
     "content_type": "image/jpeg",
     "media_type": "photo"
@@ -69,29 +93,92 @@ curl --resolve localstack:4566:127.0.0.1 -X PUT "$UPLOAD_URL" \
 
 The `--resolve` flag lets curl use the Docker-internal `localstack` hostname from the signed URL while sending traffic to your local machine.
 
-The URL expires after 15 minutes.
-
 ### Confirm Media Upload
 
 ```sh
 curl -s -X POST http://localhost:8080/media/confirm \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "user_123",
     "media_id": "1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012"
   }'
 ```
 
+Confirmation publishes a `MediaUploadedEvent` to Kafka topic `media-uploaded`. The consumer processes photos into `/thumb`, `/medium`, and `/original` S3 objects. Video processing is currently a log-only transcoding stub.
+
 ### Fetch Media Metadata
 
 ```sh
-curl -s http://localhost:8080/media/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012
+curl -s http://localhost:8080/media/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Stories
+
+Stories are uploaded to the same S3 bucket under the `stories/` prefix and expire after 24 hours once confirmed.
+
+### Generate a Story Presigned URL
+
+```sh
+curl -s -X POST http://localhost:8080/stories/presigned-url \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_name": "story.jpg",
+    "content_type": "image/jpeg"
+  }'
+```
+
+### Confirm Story Upload
+
+```sh
+curl -s -X POST http://localhost:8080/stories/confirm \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "story_id": "story-id-from-presigned-response"
+  }'
+```
+
+Confirmation publishes a `StoryUploadedEvent` to Kafka topic `story-uploaded`.
+
+### Fetch One Story
+
+```sh
+curl -s http://localhost:8080/stories/story-id-from-presigned-response \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Fetch Active Stories by User
+
+```sh
+curl -s http://localhost:8080/stories/user/user_id_from_auth_response \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Feed
+
+The Kafka consumer adds media upload events into an in-memory feed after media processing succeeds.
+
+```sh
+curl -s "http://localhost:8080/feed/user_id_from_auth_response?limit=20&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Environment
+
+```text
+AWS_REGION=us-east-1
+S3_BUCKET=instagram-media
+S3_ENDPOINT=http://localstack:4566
+JWT_SECRET=dev-secret-do-not-use-in-prod
+KAFKA_BROKER=kafka:9092
 ```
 
 ## Notes
 
-- Auth is intentionally skipped. Send `user_id` in request bodies for now.
-- Metadata is stored in memory, so restarting the Go service clears media records.
+- Metadata is stored in memory, so restarting the Go service clears users, media records, stories, and feeds.
+- The service uses `user_id` from the JWT for protected upload, media confirm, and story write routes.
 - JSON errors use this shape:
 
 ```json
