@@ -10,16 +10,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestRateLimiter(t *testing.T) *redis_rate.Limiter {
+// newTestRateLimiter opens a Redis connection scoped to userID.
+// The rate-limit key is flushed before the test starts AND after it finishes
+// so leftover GCRA state from a previous run never bleeds into the next test.
+func newTestRateLimiter(t *testing.T, userID string) *redis_rate.Limiter {
 	t.Helper()
 	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	if client.Ping(context.Background()).Err() != nil {
 		_ = client.Close()
 		t.Skip("redis unavailable, skipping")
 	}
+	key := "ratelimit:" + userID
+	// Pre-clean so a previous failed run cannot pollute this one.
+	client.Del(context.Background(), key)
 	t.Cleanup(func() {
-		// Clean up rate limit keys created during the test.
-		client.Del(context.Background(), "ratelimit:rl_test_user")
+		client.Del(context.Background(), key)
 		_ = client.Close()
 	})
 	return redis_rate.NewLimiter(client)
@@ -37,14 +42,15 @@ func requestWithUser(userID string) *http.Request {
 }
 
 func TestRateLimitAllowsRequestsUnderLimit(t *testing.T) {
-	limiter := newTestRateLimiter(t)
+	const userID = "rl_allow_user"
+	limiter := newTestRateLimiter(t, userID)
 	// Burst of 5 — first 5 requests must all pass.
 	mw := RateLimit(limiter, redis_rate.PerMinute(5))
 	handler := mw(okHandler())
 
 	for i := range 5 {
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, requestWithUser("rl_test_user"))
+		handler.ServeHTTP(rec, requestWithUser(userID))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("request %d: status = %d, want 200", i+1, rec.Code)
 		}
@@ -55,21 +61,22 @@ func TestRateLimitAllowsRequestsUnderLimit(t *testing.T) {
 }
 
 func TestRateLimitRejectsRequestsOverLimit(t *testing.T) {
-	limiter := newTestRateLimiter(t)
+	const userID = "rl_reject_user"
+	limiter := newTestRateLimiter(t, userID)
 	// Burst of 2 — 3rd request must be rejected.
 	mw := RateLimit(limiter, redis_rate.PerMinute(2))
 	handler := mw(okHandler())
 
 	for i := range 2 {
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, requestWithUser("rl_test_user"))
+		handler.ServeHTTP(rec, requestWithUser(userID))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("request %d: status = %d, want 200", i+1, rec.Code)
 		}
 	}
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, requestWithUser("rl_test_user"))
+	handler.ServeHTTP(rec, requestWithUser(userID))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("3rd request: status = %d, want 429", rec.Code)
 	}
@@ -79,7 +86,8 @@ func TestRateLimitRejectsRequestsOverLimit(t *testing.T) {
 }
 
 func TestRateLimitSkipsWhenNoUserInContext(t *testing.T) {
-	limiter := newTestRateLimiter(t)
+	const userID = "rl_nouser_user"
+	limiter := newTestRateLimiter(t, userID)
 	mw := RateLimit(limiter, redis_rate.PerMinute(1))
 	handler := mw(okHandler())
 
