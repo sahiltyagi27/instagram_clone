@@ -110,6 +110,7 @@ func main() {
 	defer consumer.Close()
 
 	go consumer.Start(ctx)
+	go runPendingCleanup(ctx, mediaStore, storyStore)
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
 	router := chi.NewRouter()
@@ -158,6 +159,26 @@ func main() {
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
+		}
+	}
+}
+
+// runPendingCleanup periodically deletes media and story rows that were never
+// confirmed within the pending TTL window (matching the presigned URL expiry).
+func runPendingCleanup(ctx context.Context, media *store.MediaStore, stories *store.StoryStore) {
+	ticker := time.NewTicker(store.PendingUploadTTL)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := media.DeleteStalePending(ctx); err != nil {
+				slog.Error("cleanup stale pending media", "error", err)
+			}
+			if err := stories.DeleteStalePending(ctx); err != nil {
+				slog.Error("cleanup stale pending stories", "error", err)
+			}
 		}
 	}
 }

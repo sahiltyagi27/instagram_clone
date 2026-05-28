@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"instagram_clone/internal/model"
 
@@ -73,13 +74,16 @@ func (s *StoryStore) GetActiveByUser(ctx context.Context, userID string) ([]mode
 }
 
 func (s *StoryStore) Confirm(ctx context.Context, id, userID string) (model.Story, error) {
+	cutoff := time.Now().UTC().Add(-PendingUploadTTL)
 	var story model.Story
 	err := s.pool.QueryRow(ctx, `
 		UPDATE stories
 		SET expires_at = NOW() + INTERVAL '24 hours'
 		WHERE id = $1 AND user_id = $2
+		  AND expires_at IS NULL
+		  AND created_at > $3
 		RETURNING id, user_id, s3_key, url, created_at, expires_at`,
-		id, userID,
+		id, userID, cutoff,
 	).Scan(&story.ID, &story.UserID, &story.S3Key, &story.URL, &story.CreatedAt, &story.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -88,4 +92,16 @@ func (s *StoryStore) Confirm(ctx context.Context, id, userID string) (model.Stor
 		return model.Story{}, fmt.Errorf("confirm story: %w", err)
 	}
 	return story, nil
+}
+
+// DeleteStalePending removes story rows that were never confirmed within the
+// pending TTL window. Called periodically to keep the table clean.
+func (s *StoryStore) DeleteStalePending(ctx context.Context) error {
+	cutoff := time.Now().UTC().Add(-PendingUploadTTL)
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM stories WHERE expires_at IS NULL AND created_at < $1`, cutoff)
+	if err != nil {
+		return fmt.Errorf("delete stale pending stories: %w", err)
+	}
+	return nil
 }
