@@ -76,11 +76,11 @@ func main() {
 
 	router := chi.NewRouter()
 
+	// Middleware must be registered before routes in Chi.
+	router.Use(telemetry.PrometheusMiddleware)
+
 	// Observability: Prometheus metrics scrape endpoint (unauthenticated).
 	router.Handle("/metrics", promhttp.Handler())
-
-	// Prometheus + OTel HTTP instrumentation applied to all app routes.
-	router.Use(telemetry.PrometheusMiddleware)
 
 	router.Mount("/auth", handler.NewAuthHandler(authService).Router())
 
