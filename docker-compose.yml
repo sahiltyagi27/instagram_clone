@@ -41,6 +41,35 @@ services:
     volumes:
       - "./init-scripts:/etc/localstack/init/ready.d"
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver (traces from the app)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - "./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - "./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro"
+    depends_on:
+      - prometheus
+      - jaeger
+
   app:
     build: .
     ports:
@@ -54,6 +83,8 @@ services:
       JWT_SECRET: dev-secret-do-not-use-in-prod
       KAFKA_BROKER: kafka:9092
       APP_ENV: dev
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
     depends_on:
       - kafka
       - localstack
+      - jaeger
