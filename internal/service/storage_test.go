@@ -159,7 +159,7 @@ func newTestStorage(t *testing.T) *Storage {
 	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-	storage, err := NewStorage(context.Background(), "http://localhost:9000", "us-east-1", "instagram-media-test")
+	storage, err := NewStorage(context.Background(), "http://localhost:9000", "", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}

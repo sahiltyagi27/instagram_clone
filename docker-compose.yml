@@ -104,6 +104,7 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       S3_BUCKET: instagram-media
       S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
       JWT_SECRET: dev-secret-do-not-use-in-prod
       KAFKA_BROKER: kafka:9092
       APP_ENV: dev

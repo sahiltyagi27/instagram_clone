@@ -99,7 +99,7 @@ func TestStoryHandlerGenerateAndConfirm(t *testing.T) {
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 	// No live S3 server is needed: PresignPutObject is computed locally by the
 	// AWS SDK (no network call) and ConfirmUpload is purely in-memory.
-	storage, err := service.NewStorage(t.Context(), "http://s3.test:9000", "us-east-1", "instagram-media-test")
+	storage, err := service.NewStorage(t.Context(), "http://s3.test:9000", "", "us-east-1", "instagram-media-test")
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
