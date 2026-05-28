@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -39,17 +40,12 @@ func (h *FeedHandler) getFeed(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 20)
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
 
-	// Validate the cursor before it reaches Redis. A malformed cursor would
-	// cause a Redis score-parse error and bubble up as a 503; return 400 instead.
-	if cursor != "" {
-		if _, err := strconv.ParseInt(cursor, 10, 64); err != nil {
+	feed, err := h.feed.GetFeed(r.Context(), userID, limit, cursor)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidCursor) {
 			writeError(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
-	}
-
-	feed, err := h.feed.GetFeed(r.Context(), userID, limit, cursor)
-	if err != nil {
 		slog.ErrorContext(r.Context(), "get feed", "user_id", userID, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "feed temporarily unavailable")
 		return
