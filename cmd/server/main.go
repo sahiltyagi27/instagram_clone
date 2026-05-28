@@ -19,6 +19,7 @@ import (
 	"instagram_clone/internal/telemetry"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -112,6 +113,9 @@ func main() {
 	go consumer.Start(ctx)
 	go runPendingCleanup(ctx, mediaStore, storyStore)
 
+	// ── Rate limiter ──────────────────────────────────────────────────────────
+	rateLimiter := redis_rate.NewLimiter(redisClient)
+
 	// ── HTTP router ───────────────────────────────────────────────────────────
 	router := chi.NewRouter()
 
@@ -123,10 +127,18 @@ func main() {
 
 	router.Mount("/auth", handler.NewAuthHandler(authService).Router())
 
+	// Write operations: stricter limit (20 req/min per user).
 	router.Group(func(r chi.Router) {
 		r.Use(middleware.JWT(jwtSecret))
+		r.Use(middleware.RateLimit(rateLimiter, redis_rate.PerMinute(20)))
 		r.Mount("/", handler.NewUploadHandler(storage, producer).Router())
 		r.Mount("/stories", handler.NewStoryHandler(storyService, producer).Router())
+	})
+
+	// Read operations: more lenient limit (60 req/min per user).
+	router.Group(func(r chi.Router) {
+		r.Use(middleware.JWT(jwtSecret))
+		r.Use(middleware.RateLimit(rateLimiter, redis_rate.PerMinute(60)))
 		r.Mount("/feed", handler.NewFeedHandler(feedService).Router())
 	})
 

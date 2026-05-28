@@ -23,8 +23,8 @@ func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model
 	}
 }
 
-func (s *FeedService) GetFeed(ctx context.Context, userID string, limit, offset int) (model.FeedResponse, error) {
-	resp, err := s.feed.GetFeed(ctx, userID, limit, offset)
+func (s *FeedService) GetFeed(ctx context.Context, userID string, limit int, cursor string) (model.FeedResponse, error) {
+	resp, err := s.feed.GetFeed(ctx, userID, limit, cursor)
 	if err != nil {
 		return model.FeedResponse{}, fmt.Errorf("get feed: %w", err)
 	}
