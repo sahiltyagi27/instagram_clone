@@ -124,7 +124,7 @@ func TestFeedHandler(t *testing.T) {
 	t.Cleanup(func() { client.Del(context.Background(), "feed:user_123") })
 
 	router := NewFeedHandler(feedSvc).Router()
-	rec := performRequest(router, http.MethodGet, "/user_123?limit=1&offset=0", "")
+	rec := performRequest(router, http.MethodGet, "/user_123?limit=1", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -132,7 +132,7 @@ func TestFeedHandler(t *testing.T) {
 
 	var resp model.FeedResponse
 	decodeResponse(t, rec, &resp)
-	if resp.Total != 1 || len(resp.Items) != 1 {
+	if len(resp.Items) != 1 {
 		t.Fatalf("feed response = %#v, want one item", resp)
 	}
 }

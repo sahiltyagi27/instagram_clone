@@ -13,8 +13,7 @@ type FeedItem struct {
 }
 
 type FeedResponse struct {
-	Items  []FeedItem `json:"items"`
-	Limit  int        `json:"limit"`
-	Offset int        `json:"offset"`
-	Total  int        `json:"total"`
+	Items      []FeedItem `json:"items"`
+	Limit      int        `json:"limit"`
+	NextCursor string     `json:"next_cursor,omitempty"` // empty = no more pages
 }

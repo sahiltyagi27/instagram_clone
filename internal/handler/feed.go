@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -37,10 +38,14 @@ func (h *FeedHandler) getFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := queryInt(r, "limit", 20)
-	offset := queryInt(r, "offset", 0)
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
 
-	feed, err := h.feed.GetFeed(r.Context(), userID, limit, offset)
+	feed, err := h.feed.GetFeed(r.Context(), userID, limit, cursor)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
 		slog.ErrorContext(r.Context(), "get feed", "user_id", userID, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "feed temporarily unavailable")
 		return

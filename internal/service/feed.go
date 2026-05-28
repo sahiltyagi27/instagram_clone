@@ -2,12 +2,17 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/store"
 )
+
+// ErrInvalidCursor is returned by GetFeed when the caller supplies a cursor
+// that cannot be decoded. Handlers should surface this as 400 Bad Request.
+var ErrInvalidCursor = errors.New("invalid cursor")
 
 type FeedService struct {
 	feed *store.FeedStore
@@ -23,9 +28,12 @@ func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model
 	}
 }
 
-func (s *FeedService) GetFeed(ctx context.Context, userID string, limit, offset int) (model.FeedResponse, error) {
-	resp, err := s.feed.GetFeed(ctx, userID, limit, offset)
+func (s *FeedService) GetFeed(ctx context.Context, userID string, limit int, cursor string) (model.FeedResponse, error) {
+	resp, err := s.feed.GetFeed(ctx, userID, limit, cursor)
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidCursor) {
+			return model.FeedResponse{}, ErrInvalidCursor
+		}
 		return model.FeedResponse{}, fmt.Errorf("get feed: %w", err)
 	}
 	return resp, nil
