@@ -54,10 +54,12 @@ func (s *MediaStore) MarkUploaded(ctx context.Context, id, userID string) (model
 	var m model.Media
 	err := s.pool.QueryRow(ctx, `
 		UPDATE media
-		SET status = 'uploaded', uploaded_at = NOW()
+		SET status = 'uploaded', uploaded_at = COALESCE(uploaded_at, NOW())
 		WHERE id = $1 AND user_id = $2
-		  AND status = 'pending'
-		  AND created_at > $3
+		  AND (
+		    (status = 'pending' AND created_at > $3)
+		    OR status = 'uploaded'
+		  )
 		RETURNING id, user_id, type, status, file_name, content_type, s3_bucket, s3_key, created_at, uploaded_at`,
 		id, userID, cutoff,
 	).Scan(&m.ID, &m.UserID, &m.Type, &m.Status, &m.FileName, &m.ContentType, &m.S3Bucket, &m.S3Key, &m.CreatedAt, &m.UploadedAt)
