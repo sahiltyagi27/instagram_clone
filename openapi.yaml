@@ -1,0 +1,595 @@
+openapi: 3.0.3
+info:
+  title: Instagram Clone API
+  version: 1.0.0
+  description: |
+    REST API for the Instagram Clone service.
+
+    **Authentication:** All endpoints except `/auth/signup` and `/auth/login` require a
+    JWT Bearer token obtained from the login or signup response.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: media not found
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: 8099076697c49c7646f8d51a16288190
+        username:
+          type: string
+          example: sahil
+        email:
+          type: string
+          format: email
+          example: sahil@example.com
+        created_at:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: string
+          description: JWT Bearer token — include in Authorization header for all authenticated requests
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    Media:
+      type: object
+      properties:
+        id:
+          type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        user_id:
+          type: string
+          example: 8099076697c49c7646f8d51a16288190
+        type:
+          type: string
+          enum: [photo, video]
+        status:
+          type: string
+          enum: [pending, uploaded]
+        file_name:
+          type: string
+          example: sunset.jpg
+        content_type:
+          type: string
+          example: image/jpeg
+        s3_bucket:
+          type: string
+          example: instagram-media
+        s3_key:
+          type: string
+          example: users/8099076697c49c7646f8d51a16288190/f3dade81111d883bc43c25eaf2e16787/sunset.jpg
+        created_at:
+          type: string
+          format: date-time
+        uploaded_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set once the upload is confirmed; null while status is pending
+
+    PresignedURLResponse:
+      type: object
+      properties:
+        media_id:
+          type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        upload_url:
+          type: string
+          description: Pre-signed S3 PUT URL. Valid for expires_in seconds.
+          example: http://localhost:9000/instagram-media/users/.../sunset.jpg?X-Amz-Signature=...
+        s3_bucket:
+          type: string
+          example: instagram-media
+        s3_key:
+          type: string
+          example: users/8099076697c49c7646f8d51a16288190/f3dade81111d883bc43c25eaf2e16787/sunset.jpg
+        expires_in:
+          type: integer
+          description: Seconds until the presigned URL expires
+          example: 900
+
+    Story:
+      type: object
+      properties:
+        id:
+          type: string
+          example: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+        user_id:
+          type: string
+          example: 8099076697c49c7646f8d51a16288190
+        s3_key:
+          type: string
+          example: stories/8099076697c49c7646f8d51a16288190/a1b2c3d4.jpg
+        url:
+          type: string
+          example: s3://instagram-media/stories/...
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: Stories expire 24 hours after creation
+
+    StoryPresignedURLResponse:
+      type: object
+      properties:
+        story_id:
+          type: string
+          example: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+        upload_url:
+          type: string
+          example: http://localhost:9000/instagram-media/stories/...?X-Amz-Signature=...
+        s3_bucket:
+          type: string
+          example: instagram-media
+        s3_key:
+          type: string
+          example: stories/8099076697c49c7646f8d51a16288190/a1b2c3d4.jpg
+        expires_in:
+          type: integer
+          example: 900
+
+    FeedItem:
+      type: object
+      properties:
+        media_id:
+          type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        user_id:
+          type: string
+          example: 8099076697c49c7646f8d51a16288190
+        s3_key:
+          type: string
+          example: users/8099076697c49c7646f8d51a16288190/f3dade81111d883bc43c25eaf2e16787/sunset.jpg
+        thumbnail_key:
+          type: string
+          example: users/8099076697c49c7646f8d51a16288190/f3dade81111d883bc43c25eaf2e16787/sunset.jpg/thumb
+        thumbnail_url:
+          type: string
+          nullable: true
+          description: Public CDN URL for the thumbnail (not yet populated)
+        created_at:
+          type: string
+          format: date-time
+
+    FeedResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedItem'
+        limit:
+          type: integer
+          example: 20
+        offset:
+          type: integer
+          example: 0
+        total:
+          type: integer
+          example: 1
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  # ── Auth ──────────────────────────────────────────────────────────────────
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username:
+                  type: string
+                  example: sahil
+                email:
+                  type: string
+                  format: email
+                  example: sahil@example.com
+                password:
+                  type: string
+                  format: password
+                  example: supersecret
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: sahil@example.com
+                password:
+                  type: string
+                  format: password
+                  example: supersecret
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Media upload ──────────────────────────────────────────────────────────
+
+  /presigned-url:
+    post:
+      tags: [Media]
+      summary: Generate a presigned S3 URL for a media upload
+      description: |
+        Returns a short-lived PUT URL pointing directly at S3/MinIO.
+        Upload the file directly to that URL, then call `POST /media/confirm`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_name, content_type, media_type]
+              properties:
+                file_name:
+                  type: string
+                  example: sunset.jpg
+                content_type:
+                  type: string
+                  example: image/jpeg
+                media_type:
+                  type: string
+                  enum: [photo, video]
+      responses:
+        '201':
+          description: Presigned URL generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignedURLResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /media/confirm:
+    post:
+      tags: [Media]
+      summary: Confirm a media upload
+      description: |
+        Call this after successfully PUTting the file to the presigned URL.
+        Marks the media as `uploaded` and publishes a `media-uploaded` Kafka event,
+        which triggers feed population in the background.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id]
+              properties:
+                media_id:
+                  type: string
+                  example: f3dade81111d883bc43c25eaf2e16787
+      responses:
+        '200':
+          description: Media confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '404':
+          description: Media not found or belongs to another user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /media/{id}:
+    get:
+      tags: [Media]
+      summary: Get media by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+      responses:
+        '200':
+          description: Media object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '404':
+          description: Media not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Stories ───────────────────────────────────────────────────────────────
+
+  /stories/presigned-url:
+    post:
+      tags: [Stories]
+      summary: Generate a presigned S3 URL for a story upload
+      description: |
+        Same two-step flow as media: get a URL here, PUT the file directly to S3,
+        then call `POST /stories/confirm`. Stories expire 24 hours after creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_name, content_type]
+              properties:
+                file_name:
+                  type: string
+                  example: my_story.jpg
+                content_type:
+                  type: string
+                  example: image/jpeg
+      responses:
+        '201':
+          description: Presigned URL generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoryPresignedURLResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /stories/confirm:
+    post:
+      tags: [Stories]
+      summary: Confirm a story upload
+      description: |
+        Marks the story as active and publishes a `story-uploaded` Kafka event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [story_id]
+              properties:
+                story_id:
+                  type: string
+                  example: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+      responses:
+        '200':
+          description: Story confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Story'
+        '404':
+          description: Story not found or belongs to another user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /stories/{id}:
+    get:
+      tags: [Stories]
+      summary: Get a single story by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+      responses:
+        '200':
+          description: Story object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Story'
+        '404':
+          description: Story not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /stories/user/{user_id}:
+    get:
+      tags: [Stories]
+      summary: Get all active stories for a user
+      description: Only the authenticated user can fetch their own stories.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+      responses:
+        '200':
+          description: List of active stories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Story'
+        '403':
+          description: Cannot access another user's stories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Feed ──────────────────────────────────────────────────────────────────
+
+  /feed/{user_id}:
+    get:
+      tags: [Feed]
+      summary: Get the media feed for a user
+      description: |
+        Returns paginated feed items. Only the authenticated user can fetch their own feed.
+        Feed is populated asynchronously after `POST /media/confirm` via Kafka.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Max number of items to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Number of items to skip
+      responses:
+        '200':
+          description: Paginated feed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedResponse'
+        '403':
+          description: Cannot access another user's feed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
