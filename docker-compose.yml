@@ -52,7 +52,9 @@ services:
           sleep 2
         done
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic media-uploaded --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic media-uploaded-dlq --partitions 1 --replication-factor 1
         kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic story-uploaded --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic story-uploaded-dlq --partitions 1 --replication-factor 1
         wait
 
   minio:

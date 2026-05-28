@@ -108,6 +108,29 @@ func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 	}
 }
 
+func TestConfirmMediaUploadedIsIdempotent(t *testing.T) {
+	storage := newTestStorage(t)
+	resp := mustGeneratePresignedURL(t, storage, "user_123")
+
+	first, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
+	if err != nil {
+		t.Fatalf("first ConfirmMediaUploaded returned error: %v", err)
+	}
+
+	// Second confirmation of the same media ID must succeed and return the same record.
+	second, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
+	if err != nil {
+		t.Fatalf("second ConfirmMediaUploaded returned error: %v", err)
+	}
+	if second.Status != model.MediaStatusUploaded {
+		t.Fatalf("status = %q, want uploaded", second.Status)
+	}
+	// uploaded_at must not change between calls.
+	if !second.UploadedAt.Equal(*first.UploadedAt) {
+		t.Fatalf("UploadedAt changed on re-confirm: first=%s second=%s", first.UploadedAt, second.UploadedAt)
+	}
+}
+
 func TestConfirmMediaUploadedReturnsNotFoundForMissingOrWrongUser(t *testing.T) {
 	storage := newTestStorage(t)
 	resp := mustGeneratePresignedURL(t, storage, "user_123")

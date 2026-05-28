@@ -28,7 +28,7 @@ var (
 var (
 	KafkaMessagesConsumed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "kafka_messages_consumed_total",
-		Help: "Total Kafka messages consumed by topic and status (ok|error).",
+		Help: "Total Kafka messages consumed by topic and status (ok|error|dlq_error|commit_error).",
 	}, []string{"topic", "status"})
 )
 
