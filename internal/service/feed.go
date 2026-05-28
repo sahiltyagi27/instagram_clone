@@ -1,57 +1,32 @@
 package service
 
 import (
-	"sort"
-	"sync"
+	"context"
+	"log/slog"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
 )
 
 type FeedService struct {
-	mu    sync.RWMutex
-	items map[string][]model.FeedItem
+	feed *store.FeedStore
 }
 
-func NewFeedService() *FeedService {
-	return &FeedService{items: make(map[string][]model.FeedItem)}
+func NewFeedService(feed *store.FeedStore) *FeedService {
+	return &FeedService{feed: feed}
 }
 
-func (s *FeedService) AddFeedItem(userID string, item model.FeedItem) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.items[userID] = append(s.items[userID], item)
+func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model.FeedItem) {
+	if err := s.feed.AddItem(ctx, userID, item); err != nil {
+		slog.Error("add feed item to redis", "user_id", userID, "error", err)
+	}
 }
 
-func (s *FeedService) GetFeed(userID string, limit, offset int) model.FeedResponse {
-	if limit <= 0 {
-		limit = 20
+func (s *FeedService) GetFeed(ctx context.Context, userID string, limit, offset int) model.FeedResponse {
+	resp, err := s.feed.GetFeed(ctx, userID, limit, offset)
+	if err != nil {
+		slog.Error("get feed from redis", "user_id", userID, "error", err)
+		return model.FeedResponse{Items: []model.FeedItem{}, Limit: limit, Offset: offset}
 	}
-	if offset < 0 {
-		offset = 0
-	}
-
-	s.mu.RLock()
-	items := append([]model.FeedItem(nil), s.items[userID]...)
-	s.mu.RUnlock()
-
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
-
-	total := len(items)
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-
-	return model.FeedResponse{
-		Items:  items[offset:end],
-		Limit:  limit,
-		Offset: offset,
-		Total:  total,
-	}
+	return resp
 }

@@ -10,10 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"instagram_clone/internal/db"
 	"instagram_clone/internal/handler"
 	appkafka "instagram_clone/internal/kafka"
 	"instagram_clone/internal/middleware"
 	"instagram_clone/internal/service"
+	"instagram_clone/internal/store"
 	"instagram_clone/internal/telemetry"
 
 	"github.com/go-chi/chi/v5"
@@ -42,12 +44,45 @@ func main() {
 		}()
 	}
 
+	// ── Postgres ──────────────────────────────────────────────────────────────
+	pgPool, err := db.NewPostgresPool(ctx, envOrDefault("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/instagram_clone"))
+	if err != nil {
+		slog.Error("connect to postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pgPool.Close()
+
+	if err := db.RunMigrations(
+		envOrDefault("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/instagram_clone"),
+		"internal/migrations",
+	); err != nil {
+		slog.Error("run migrations", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("database migrations applied")
+
+	// ── Redis ─────────────────────────────────────────────────────────────────
+	redisClient, err := db.NewRedisClient(ctx, envOrDefault("REDIS_ADDR", "localhost:6379"))
+	if err != nil {
+		slog.Error("connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer redisClient.Close()
+
+	// ── Stores ────────────────────────────────────────────────────────────────
+	userStore := store.NewUserStore(pgPool)
+	mediaStore := store.NewMediaStore(pgPool)
+	storyStore := store.NewStoryStore(pgPool)
+	feedStore := store.NewFeedStore(redisClient)
+
+	// ── S3 / MinIO ────────────────────────────────────────────────────────────
 	storage, err := service.NewStorage(
 		ctx,
 		envOrDefault("S3_ENDPOINT", "http://minio:9000"),
 		envOrDefault("S3_PUBLIC_ENDPOINT", ""),
 		envOrDefault("AWS_REGION", "us-east-1"),
 		envOrDefault("S3_BUCKET", "instagram-media"),
+		mediaStore,
 	)
 	if err != nil {
 		slog.Error("initialize storage", "error", err)
@@ -61,20 +96,22 @@ func main() {
 	}
 	kafkaBroker := envOrDefault("KAFKA_BROKER", "kafka:9092")
 
-	authService := service.NewAuthService(jwtSecret)
-	storyService := service.NewStoryService(storage)
-	feedService := service.NewFeedService()
+	// ── Services ──────────────────────────────────────────────────────────────
+	authService := service.NewAuthService(jwtSecret, userStore)
+	storyService := service.NewStoryService(storage, storyStore)
+	feedService := service.NewFeedService(feedStore)
 	mediaProcessor := service.NewMediaProcessor(storage)
 
+	// ── Kafka ─────────────────────────────────────────────────────────────────
 	producer := appkafka.NewKafkaProducer(kafkaBroker)
 	defer producer.Close()
 
 	consumer := appkafka.NewKafkaConsumer(kafkaBroker, mediaProcessor, feedService)
 	defer consumer.Close()
 
-	go storyService.StartExpiryWorker(ctx)
 	go consumer.Start(ctx)
 
+	// ── HTTP router ───────────────────────────────────────────────────────────
 	router := chi.NewRouter()
 
 	// Middleware must be registered before routes in Chi.

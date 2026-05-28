@@ -1,4 +1,28 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: instagram_clone
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     environment:
@@ -109,8 +133,18 @@ services:
       KAFKA_BROKER: kafka:9092
       APP_ENV: dev
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/instagram_clone
+      REDIS_ADDR: redis:6379
     depends_on:
-      - kafka
-      - minio
-      - createbuckets
-      - jaeger
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started

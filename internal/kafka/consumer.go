@@ -100,7 +100,7 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			continue
 		}
 
-		c.feed.AddFeedItem(event.UserID, model.FeedItem{
+		c.feed.AddFeedItem(msgCtx, event.UserID, model.FeedItem{
 			MediaID:      event.MediaID,
 			UserID:       event.UserID,
 			S3Key:        event.S3Key,
@@ -155,8 +155,6 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 		telemetry.KafkaMessagesConsumed.WithLabelValues(StoryUploadedTopic, "ok").Inc()
 		span.End()
 
-		// suppress unused variable warning for msgCtx until processing is added
-		_ = msgCtx
 	}
 }
 

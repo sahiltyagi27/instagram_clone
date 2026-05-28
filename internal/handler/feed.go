@@ -37,7 +37,7 @@ func (h *FeedHandler) getFeed(w http.ResponseWriter, r *http.Request) {
 
 	limit := queryInt(r, "limit", 20)
 	offset := queryInt(r, "offset", 0)
-	writeJSON(w, http.StatusOK, h.feed.GetFeed(userID, limit, offset))
+	writeJSON(w, http.StatusOK, h.feed.GetFeed(r.Context(), userID, limit, offset))
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"instagram_clone/internal/middleware"
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/service"
+	"instagram_clone/internal/store"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const testJWTSecret = "test-secret"
@@ -213,7 +217,22 @@ func newTestRouter(t *testing.T) http.Handler {
 	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-	storage, err := service.NewStorage(t.Context(), "http://localhost:9000", "", "us-east-1", "instagram-media-test")
+	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil || pool.Ping(context.Background()) != nil {
+		if pool != nil {
+			pool.Close()
+		}
+		t.Skip("postgres unavailable, skipping")
+	}
+	pool.Exec(context.Background(), "DELETE FROM media")
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM media")
+		pool.Close()
+	})
+
+	mediaStore := store.NewMediaStore(pool)
+	storage, err := service.NewStorage(t.Context(), "http://localhost:9000", "", "us-east-1", "instagram-media-test", mediaStore)
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
