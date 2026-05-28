@@ -4,14 +4,54 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func newTestStoryService(t *testing.T) *StoryService {
+	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+
+	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil || pool.Ping(context.Background()) != nil {
+		if pool != nil {
+			pool.Close()
+		}
+		t.Skip("postgres unavailable, skipping")
+	}
+
+	// Seed a test user to satisfy the foreign key on stories.user_id.
+	pool.Exec(context.Background(), `
+		INSERT INTO users (id, username, email, password_hash) VALUES
+		('user_123', 'test', 'test@example.com', 'x')
+		ON CONFLICT DO NOTHING`)
+
+	pool.Exec(context.Background(), "DELETE FROM stories")
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM stories")
+		pool.Exec(context.Background(), "DELETE FROM users WHERE id = 'user_123'")
+		pool.Close()
+	})
+
+	storyStore := store.NewStoryStore(pool)
+	mediaStore := store.NewMediaStore(pool)
+
+	// Presigning is computed locally by the AWS SDK — no live S3 required.
+	storage, err := NewStorage(context.Background(), "http://s3.test:9000", "", "us-east-1", "instagram-media-test", mediaStore)
+	if err != nil {
+		t.Fatalf("NewStorage returned error: %v", err)
+	}
+
+	return NewStoryService(storage, storyStore)
+}
+
 func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
-	storage := newTestStorage(t)
-	stories := NewStoryService(storage)
+	stories := newTestStoryService(t)
 
 	resp, err := stories.GeneratePresignedURL(context.Background(), model.StoryPresignedURLRequest{
 		UserID:      "user_123",
@@ -28,6 +68,7 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 		t.Fatalf("S3Key = %q, want sanitized story key", resp.S3Key)
 	}
 
+	// Story is not yet confirmed — should not appear as active.
 	if active := stories.GetActiveStoriesByUser(context.Background(), "user_123"); len(active) != 0 {
 		t.Fatalf("active stories before confirm = %d, want 0", len(active))
 	}
@@ -37,7 +78,7 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 		t.Fatalf("ConfirmUpload returned error: %v", err)
 	}
 	if story.ExpiresAt.IsZero() {
-		t.Fatal("expected ExpiresAt to be set")
+		t.Fatal("expected ExpiresAt to be set after confirm")
 	}
 
 	got, err := stories.GetStory(context.Background(), resp.StoryID)
@@ -50,12 +91,12 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 
 	active := stories.GetActiveStoriesByUser(context.Background(), "user_123")
 	if len(active) != 1 {
-		t.Fatalf("active stories = %d, want 1", len(active))
+		t.Fatalf("active stories after confirm = %d, want 1", len(active))
 	}
 }
 
 func TestStoryServiceNotFoundPaths(t *testing.T) {
-	stories := NewStoryService(newTestStorage(t))
+	stories := newTestStoryService(t)
 
 	_, err := stories.ConfirmUpload(context.Background(), "user_123", "missing")
 	if !errors.Is(err, ErrStoryNotFound) {
@@ -65,55 +106,5 @@ func TestStoryServiceNotFoundPaths(t *testing.T) {
 	_, err = stories.GetStory(context.Background(), "missing")
 	if !errors.Is(err, ErrStoryNotFound) {
 		t.Fatalf("GetStory error = %v, want ErrStoryNotFound", err)
-	}
-}
-
-func TestStoryServicePurgeExpiredRemovesPendingAndExpiredStories(t *testing.T) {
-	stories := NewStoryService(newTestStorage(t))
-	now := time.Now().UTC()
-
-	stories.stories["pending_old"] = model.Story{
-		ID:        "pending_old",
-		UserID:    "user_123",
-		CreatedAt: now.Add(-PendingStoryTTL - time.Minute),
-	}
-	stories.stories["zero_created"] = model.Story{
-		ID:     "zero_created",
-		UserID: "user_123",
-	}
-	stories.stories["pending_new"] = model.Story{
-		ID:        "pending_new",
-		UserID:    "user_123",
-		CreatedAt: now.Add(-time.Minute),
-	}
-	stories.stories["expired"] = model.Story{
-		ID:        "expired",
-		UserID:    "user_123",
-		CreatedAt: now.Add(-StoryTTL),
-		ExpiresAt: now.Add(-time.Minute),
-	}
-	stories.stories["active"] = model.Story{
-		ID:        "active",
-		UserID:    "user_123",
-		CreatedAt: now.Add(-time.Minute),
-		ExpiresAt: now.Add(time.Hour),
-	}
-
-	stories.purgeExpired(now)
-
-	if _, ok := stories.stories["pending_old"]; ok {
-		t.Fatal("expected old pending story to be purged")
-	}
-	if _, ok := stories.stories["zero_created"]; ok {
-		t.Fatal("expected zero-created story to be purged")
-	}
-	if _, ok := stories.stories["expired"]; ok {
-		t.Fatal("expected expired story to be purged")
-	}
-	if _, ok := stories.stories["pending_new"]; !ok {
-		t.Fatal("expected fresh pending story to remain")
-	}
-	if _, ok := stories.stories["active"]; !ok {
-		t.Fatal("expected active story to remain")
 	}
 }

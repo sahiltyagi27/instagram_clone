@@ -3,18 +3,16 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,21 +21,20 @@ import (
 
 const PresignedURLExpiry = 15 * time.Minute
 
-var ErrMediaNotFound = errors.New("media not found")
+// ErrMediaNotFound is kept for handler compatibility — wraps store.ErrMediaNotFound.
+var ErrMediaNotFound = store.ErrMediaNotFound
 
 type Storage struct {
 	bucket    string
 	client    *s3.Client
 	presigner *s3.PresignClient // built from publicEndpoint — URLs work from outside Docker
-
-	mu    sync.RWMutex
-	media map[string]model.Media
+	media     *store.MediaStore
 }
 
 // NewStorage creates a Storage that uses endpoint for internal S3 operations (get/put)
 // and publicEndpoint for generating presigned URLs returned to clients.
 // Pass an empty publicEndpoint to fall back to endpoint for both (e.g. in tests).
-func NewStorage(ctx context.Context, endpoint, publicEndpoint, region, bucket string) (*Storage, error) {
+func NewStorage(ctx context.Context, endpoint, publicEndpoint, region, bucket string, media *store.MediaStore) (*Storage, error) {
 	cfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(region),
@@ -65,7 +62,7 @@ func NewStorage(ctx context.Context, endpoint, publicEndpoint, region, bucket st
 		bucket:    bucket,
 		client:    client,
 		presigner: s3.NewPresignClient(publicClient),
-		media:     make(map[string]model.Media),
+		media:     media,
 	}, nil
 }
 
@@ -101,9 +98,9 @@ func (s *Storage) GeneratePresignedUploadURL(ctx context.Context, req model.Pres
 		CreatedAt:   time.Now().UTC(),
 	}
 
-	s.mu.Lock()
-	s.media[mediaID] = media
-	s.mu.Unlock()
+	if err := s.media.Create(ctx, media); err != nil {
+		return nil, fmt.Errorf("store media: %w", err)
+	}
 
 	return &model.PresignedURLResponse{
 		MediaID:   mediaID,
@@ -114,32 +111,25 @@ func (s *Storage) GeneratePresignedUploadURL(ctx context.Context, req model.Pres
 	}, nil
 }
 
-func (s *Storage) ConfirmMediaUploaded(_ context.Context, userID, mediaID string) (*model.Media, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	media, ok := s.media[mediaID]
-	if !ok || media.UserID != userID {
-		return nil, ErrMediaNotFound
+func (s *Storage) ConfirmMediaUploaded(ctx context.Context, userID, mediaID string) (*model.Media, error) {
+	media, err := s.media.MarkUploaded(ctx, mediaID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrMediaNotFound) {
+			return nil, ErrMediaNotFound
+		}
+		return nil, err
 	}
-
-	now := time.Now().UTC()
-	media.Status = model.MediaStatusUploaded
-	media.UploadedAt = &now
-	s.media[mediaID] = media
-
 	return &media, nil
 }
 
-func (s *Storage) GetMedia(_ context.Context, mediaID string) (*model.Media, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	media, ok := s.media[mediaID]
-	if !ok {
-		return nil, ErrMediaNotFound
+func (s *Storage) GetMedia(ctx context.Context, mediaID string) (*model.Media, error) {
+	media, err := s.media.GetByID(ctx, mediaID)
+	if err != nil {
+		if errors.Is(err, store.ErrMediaNotFound) {
+			return nil, ErrMediaNotFound
+		}
+		return nil, err
 	}
-
 	return &media, nil
 }
 
@@ -202,12 +192,4 @@ func (s *Storage) PutObject(ctx context.Context, key, contentType string, data [
 		return fmt.Errorf("put object: %w", err)
 	}
 	return nil
-}
-
-func newID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate media id: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
 }

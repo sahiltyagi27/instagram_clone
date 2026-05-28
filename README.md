@@ -1,17 +1,22 @@
 # Instagram Clone Upload Service
 
-A Go microservice for Instagram-style media uploads. It supports JWT auth, S3 presigned uploads, media confirmation events through Kafka, 24-hour stories, image variant processing, and an in-memory feed.
+A Go microservice for Instagram-style media uploads. Supports JWT auth, S3 presigned uploads, Kafka events, 24-hour stories, image variant processing, a Redis-backed feed, and full observability via OpenTelemetry, Prometheus, and Grafana.
 
 ## Stack
 
-- Go HTTP service on port `8080`
-- Chi router
-- JWT auth with HS256
-- AWS SDK for Go v2
-- MinIO S3 at `http://minio:9000` (browser UI at `http://localhost:9001`)
-- S3 bucket: `instagram-media`
-- Kafka and Zookeeper through Docker Compose
-- In-memory stores for users, media, stories, and feeds
+| Component | Technology |
+|---|---|
+| HTTP service | Go + Chi router, port `8080` |
+| Auth | JWT HS256 |
+| Object storage | MinIO (S3-compatible), port `9000` |
+| Database | Postgres 16, port `5432` |
+| Cache / Feed | Redis 7, port `6379` |
+| Events | Kafka + Zookeeper |
+| Tracing | OpenTelemetry → Jaeger, port `16686` |
+| Metrics | Prometheus, port `9090` |
+| Dashboards | Grafana, port `3000` |
+| Kafka UI | Kafka UI, port `8090` |
+| MinIO UI | MinIO Console, port `9001` |
 
 ## Setup
 
@@ -19,11 +24,20 @@ A Go microservice for Instagram-style media uploads. It supports JWT auth, S3 pr
 docker compose up --build
 ```
 
-The `createbuckets` container creates the `instagram-media` bucket on startup. Kafka creates the `media-uploaded` and `story-uploaded` topics on startup.
+On first startup:
+- `createbuckets` creates the `instagram-media` S3 bucket in MinIO
+- Kafka creates the `media-uploaded` and `story-uploaded` topics
+- The app runs all pending Postgres migrations automatically
 
-### S3 Browser UI
+## Observability
 
-Open **http://localhost:9001** and log in with `minioadmin` / `minioadmin` to browse buckets and objects visually.
+| Tool | URL | Purpose |
+|---|---|---|
+| Jaeger | http://localhost:16686 | Distributed traces across HTTP → Kafka → processor |
+| Grafana | http://localhost:3000 | Dashboards (admin / admin) |
+| Prometheus | http://localhost:9090 | Raw metrics |
+| Kafka UI | http://localhost:8090 | Browse topics and messages |
+| MinIO UI | http://localhost:9001 | Browse S3 buckets (minioadmin / minioadmin) |
 
 ## Auth
 
@@ -60,7 +74,7 @@ curl -s -X POST http://localhost:8080/auth/login \
 
 ## Media Uploads
 
-### Generate a Presigned Upload URL
+### 1. Generate a Presigned Upload URL
 
 ```sh
 curl -s -X POST http://localhost:8080/presigned-url \
@@ -78,26 +92,24 @@ Example response:
 ```json
 {
   "media_id": "1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012",
-  "upload_url": "http://minio:9000/instagram-media/users/user_123/...",
+  "upload_url": "http://localhost:9000/instagram-media/users/...",
   "s3_bucket": "instagram-media",
-  "s3_key": "users/user_123/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012/sunset.jpg",
+  "s3_key": "users/user_id/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012/sunset.jpg",
   "expires_in": 900
 }
 ```
 
-### Upload the File to S3
+### 2. Upload the File Directly to S3
 
-Use the `upload_url` returned by the first endpoint:
+Use the `upload_url` from the previous response:
 
 ```sh
-curl --resolve minio:9000:127.0.0.1 -X PUT "$UPLOAD_URL" \
+curl -X PUT "$UPLOAD_URL" \
   -H "Content-Type: image/jpeg" \
   --data-binary @sunset.jpg
 ```
 
-The `--resolve` flag lets curl use the Docker-internal `minio` hostname from the signed URL while sending traffic to your local machine.
-
-### Confirm Media Upload
+### 3. Confirm the Upload
 
 ```sh
 curl -s -X POST http://localhost:8080/media/confirm \
@@ -108,7 +120,11 @@ curl -s -X POST http://localhost:8080/media/confirm \
   }'
 ```
 
-Confirmation publishes a `MediaUploadedEvent` to Kafka topic `media-uploaded`. The consumer processes photos into `/thumb`, `/medium`, and `/original` S3 objects. Video processing is currently a log-only transcoding stub.
+This publishes a `media-uploaded` Kafka event. The consumer then:
+- Downloads the original from S3
+- Generates a `150×150` thumbnail and a `640×640` medium variant
+- Uploads all three back to S3 (`/thumb`, `/medium`, `/original`)
+- Adds the item to the user's Redis feed
 
 ### Fetch Media Metadata
 
@@ -119,9 +135,9 @@ curl -s http://localhost:8080/media/1f6f5e8c1c2d4e0f9a8b7c6d5e4f3012 \
 
 ## Stories
 
-Stories are uploaded to the same S3 bucket under the `stories/` prefix and expire after 24 hours once confirmed.
+Stories expire 24 hours after confirmation. Same two-step presign flow as media.
 
-### Generate a Story Presigned URL
+### 1. Generate a Story Presigned URL
 
 ```sh
 curl -s -X POST http://localhost:8080/stories/presigned-url \
@@ -133,7 +149,7 @@ curl -s -X POST http://localhost:8080/stories/presigned-url \
   }'
 ```
 
-### Confirm Story Upload
+### 2. Confirm the Story Upload
 
 ```sh
 curl -s -X POST http://localhost:8080/stories/confirm \
@@ -144,55 +160,76 @@ curl -s -X POST http://localhost:8080/stories/confirm \
   }'
 ```
 
-Confirmation publishes a `StoryUploadedEvent` to Kafka topic `story-uploaded`.
-
-### Fetch One Story
+### Fetch a Story
 
 ```sh
-curl -s http://localhost:8080/stories/story-id-from-presigned-response \
+curl -s http://localhost:8080/stories/{story_id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Fetch Active Stories by User
 
 ```sh
-curl -s http://localhost:8080/stories/user/user_id_from_auth_response \
+curl -s http://localhost:8080/stories/user/{user_id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Feed
 
-The Kafka consumer adds media upload events into an in-memory feed after media processing succeeds.
-Feed items include `thumbnail_key` for the processed S3 object key. They do not expose a public URL yet.
+The feed is populated asynchronously after `POST /media/confirm` via Kafka → Redis. Supports `limit` and `offset` pagination, capped at 1000 items per user.
 
 ```sh
-curl -s "http://localhost:8080/feed/user_id_from_auth_response?limit=20&offset=0" \
+curl -s "http://localhost:8080/feed/{user_id}?limit=20&offset=0" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Environment
 
 ```text
+# Postgres
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/instagram_clone
+
+# Redis
+REDIS_ADDR=redis:6379
+
+# S3 / MinIO
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin
 S3_BUCKET=instagram-media
-S3_ENDPOINT=http://minio:9000
+S3_ENDPOINT=http://minio:9000          # internal Docker endpoint
+S3_PUBLIC_ENDPOINT=http://localhost:9000  # used for presigned URLs (reachable from host)
+
+# Auth
 JWT_SECRET=dev-secret-do-not-use-in-prod
-KAFKA_BROKER=kafka:9092
 APP_ENV=dev
+
+# Kafka
+KAFKA_BROKER=kafka:9092
+
+# Tracing
+OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4318
 ```
+
+## Running Tests
+
+Integration tests require Postgres and Redis to be running. They skip automatically if unavailable.
+
+```sh
+# Run all tests (skips DB-dependent tests if stack is not up)
+go test ./...
+
+# Run with the full stack up
+docker compose up -d postgres redis
+go test ./...
+```
+
+## API Reference
+
+See [`openapi.yaml`](./openapi.yaml) at the project root. Paste it into [editor.swagger.io](https://editor.swagger.io) for interactive docs.
 
 ## Notes
 
-- Metadata is stored in memory, so restarting the Go service clears users, media records, stories, and feeds.
-- The service uses `user_id` from the JWT for protected upload, media confirm, story write routes, and user-scoped feed/story reads.
-- `JWT_SECRET` falls back to a development secret only when `APP_ENV` is empty, `dev`, `local`, or `test`.
-- S3 credentials are set via environment variables. Docker Compose uses the MinIO root credentials.
-- JSON errors use this shape:
-
-```json
-{
-  "error": "media not found"
-}
-```
+- `JWT_SECRET` falls back to a development secret when `APP_ENV` is empty, `dev`, `local`, or `test`. Set it explicitly in all other environments.
+- The Kafka consumer processes photos (thumbnail + medium + original). Video transcoding is currently a stub.
+- JSON errors always use the shape `{ "error": "message" }`.

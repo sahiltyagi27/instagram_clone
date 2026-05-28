@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestGeneratePresignedUploadURLStoresPendingMedia(t *testing.T) {
@@ -159,11 +162,45 @@ func newTestStorage(t *testing.T) *Storage {
 	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-	storage, err := NewStorage(context.Background(), "http://localhost:9000", "", "us-east-1", "instagram-media-test")
+	pool := newTestPool(t)
+	mediaStore := store.NewMediaStore(pool)
+
+	storage, err := NewStorage(context.Background(), "http://localhost:9000", "", "us-east-1", "instagram-media-test", mediaStore)
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
 	return storage
+}
+
+// newTestPool opens a connection to the local Postgres used for integration tests
+// and cleans up the media table after the test completes.
+func newTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+
+	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable, skipping: %v", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Skipf("postgres unavailable, skipping: %v", err)
+	}
+
+	ctx := context.Background()
+	// Clear any leftover data. Delete media before users due to FK constraint.
+	pool.Exec(ctx, "DELETE FROM media")
+	pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
+	// Seed the test user that media rows will reference via FK.
+	pool.Exec(ctx, `INSERT INTO users (id, username, email, password_hash, created_at)
+		VALUES ('user_123', 'testuser', 'test@example.com', 'testhash', NOW())
+		ON CONFLICT (id) DO NOTHING`)
+	t.Cleanup(func() {
+		pool.Exec(ctx, "DELETE FROM media")
+		pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
+		pool.Close()
+	})
+	return pool
 }
 
 func mustGeneratePresignedURL(t *testing.T, storage *Storage, userID string) *model.PresignedURLResponse {

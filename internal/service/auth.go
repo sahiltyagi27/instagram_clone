@@ -1,13 +1,14 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -22,41 +23,26 @@ var (
 
 type AuthService struct {
 	secret string
-
-	mu           sync.RWMutex
-	usersByID    map[string]model.User
-	usersByEmail map[string]model.User
+	users  *store.UserStore
 }
 
 type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func NewAuthService(secret string) *AuthService {
-	return &AuthService{
-		secret:       secret,
-		usersByID:    make(map[string]model.User),
-		usersByEmail: make(map[string]model.User),
-	}
+func NewAuthService(secret string, users *store.UserStore) *AuthService {
+	return &AuthService{secret: secret, users: users}
 }
 
-func (s *AuthService) Signup(req model.SignupRequest) (*model.AuthResponse, error) {
+func (s *AuthService) Signup(ctx context.Context, req model.SignupRequest) (*model.AuthResponse, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	username := strings.TrimSpace(req.Username)
-	password := req.Password
 
-	if email == "" || username == "" || password == "" {
+	if email == "" || username == "" || req.Password == "" {
 		return nil, ErrInvalidCredentials
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.usersByEmail[email]; ok {
-		return nil, ErrUserAlreadyExists
-	}
-
-	hash, err := HashPassword(password)
+	hash, err := HashPassword(req.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -72,28 +58,37 @@ func (s *AuthService) Signup(req model.SignupRequest) (*model.AuthResponse, erro
 		PasswordHash: hash,
 		CreatedAt:    time.Now().UTC(),
 	}
+
+	if err := s.users.Create(ctx, user); err != nil {
+		if errors.Is(err, store.ErrUserAlreadyExists) {
+			return nil, ErrUserAlreadyExists
+		}
+		return nil, err
+	}
+
 	token, err := GenerateJWT(s.secret, user.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	s.usersByID[user.ID] = user
-	s.usersByEmail[email] = user
-
 	return &model.AuthResponse{User: publicUser(user), Token: token}, nil
 }
 
-func (s *AuthService) Login(req model.LoginRequest) (*model.AuthResponse, error) {
+func (s *AuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	password := req.Password
-	if email == "" || password == "" {
+	if email == "" || req.Password == "" {
 		return nil, ErrInvalidCredentials
 	}
 
-	s.mu.RLock()
-	user, ok := s.usersByEmail[email]
-	s.mu.RUnlock()
-	if !ok || !CheckPassword(user.PasswordHash, password) {
+	user, err := s.users.GetByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, err
+	}
+
+	if !CheckPassword(user.PasswordHash, req.Password) {
 		return nil, ErrInvalidCredentials
 	}
 
@@ -105,12 +100,12 @@ func (s *AuthService) Login(req model.LoginRequest) (*model.AuthResponse, error)
 	return &model.AuthResponse{User: publicUser(user), Token: token}, nil
 }
 
-func (s *AuthService) GetUser(userID string) (model.User, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	user, ok := s.usersByID[userID]
-	return publicUser(user), ok
+func (s *AuthService) GetUser(ctx context.Context, userID string) (model.User, bool) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return model.User{}, false
+	}
+	return publicUser(user), true
 }
 
 func HashPassword(password string) (string, error) {

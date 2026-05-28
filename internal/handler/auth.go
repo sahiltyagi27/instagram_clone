@@ -38,7 +38,7 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.auth.Signup(req)
+	resp, err := h.auth.Signup(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, service.ErrUserAlreadyExists) {
 			writeError(w, http.StatusConflict, "user already exists")
@@ -64,7 +64,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.auth.Login(req)
+	resp, err := h.auth.Login(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")

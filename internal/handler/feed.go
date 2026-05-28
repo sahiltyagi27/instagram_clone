@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,7 +38,14 @@ func (h *FeedHandler) getFeed(w http.ResponseWriter, r *http.Request) {
 
 	limit := queryInt(r, "limit", 20)
 	offset := queryInt(r, "offset", 0)
-	writeJSON(w, http.StatusOK, h.feed.GetFeed(userID, limit, offset))
+
+	feed, err := h.feed.GetFeed(r.Context(), userID, limit, offset)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get feed", "user_id", userID, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "feed temporarily unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

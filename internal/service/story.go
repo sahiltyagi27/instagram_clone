@@ -6,31 +6,21 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
 )
 
-const (
-	StoryTTL        = 24 * time.Hour
-	PendingStoryTTL = 30 * time.Minute
-)
-
-var ErrStoryNotFound = errors.New("story not found")
+var ErrStoryNotFound = store.ErrStoryNotFound
 
 type StoryService struct {
 	storage *Storage
-
-	mu      sync.RWMutex
-	stories map[string]model.Story
+	stories *store.StoryStore
 }
 
-func NewStoryService(storage *Storage) *StoryService {
-	return &StoryService{
-		storage: storage,
-		stories: make(map[string]model.Story),
-	}
+func NewStoryService(storage *Storage, stories *store.StoryStore) *StoryService {
+	return &StoryService{storage: storage, stories: stories}
 }
 
 func (s *StoryService) GeneratePresignedURL(ctx context.Context, req model.StoryPresignedURLRequest) (*model.StoryPresignedURLResponse, error) {
@@ -46,18 +36,17 @@ func (s *StoryService) GeneratePresignedURL(ctx context.Context, req model.Story
 		return nil, err
 	}
 
-	now := time.Now().UTC()
 	story := model.Story{
 		ID:        storyID,
 		UserID:    req.UserID,
 		S3Key:     key,
 		URL:       s.storage.ObjectURL(key),
-		CreatedAt: now,
+		CreatedAt: time.Now().UTC(),
 	}
 
-	s.mu.Lock()
-	s.stories[storyID] = story
-	s.mu.Unlock()
+	if err := s.stories.Create(ctx, story); err != nil {
+		return nil, err
+	}
 
 	return &model.StoryPresignedURLResponse{
 		StoryID:   storyID,
@@ -68,82 +57,32 @@ func (s *StoryService) GeneratePresignedURL(ctx context.Context, req model.Story
 	}, nil
 }
 
-func (s *StoryService) ConfirmUpload(_ context.Context, userID, storyID string) (*model.Story, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	story, ok := s.stories[storyID]
-	if !ok || story.UserID != userID {
-		return nil, ErrStoryNotFound
-	}
-
-	story.ExpiresAt = time.Now().UTC().Add(StoryTTL)
-	s.stories[storyID] = story
-
-	return &story, nil
-}
-
-func (s *StoryService) GetStory(_ context.Context, storyID string) (*model.Story, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	story, ok := s.stories[storyID]
-	if !ok || !storyActive(story, time.Now().UTC()) {
-		return nil, ErrStoryNotFound
-	}
-	return &story, nil
-}
-
-func (s *StoryService) GetActiveStoriesByUser(_ context.Context, userID string) []model.Story {
-	now := time.Now().UTC()
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stories := make([]model.Story, 0)
-	for _, story := range s.stories {
-		if story.UserID == userID && storyActive(story, now) {
-			stories = append(stories, story)
+func (s *StoryService) ConfirmUpload(ctx context.Context, userID, storyID string) (*model.Story, error) {
+	story, err := s.stories.Confirm(ctx, storyID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrStoryNotFound) {
+			return nil, ErrStoryNotFound
 		}
+		return nil, err
+	}
+	return &story, nil
+}
+
+func (s *StoryService) GetStory(ctx context.Context, storyID string) (*model.Story, error) {
+	story, err := s.stories.GetByID(ctx, storyID)
+	if err != nil {
+		if errors.Is(err, store.ErrStoryNotFound) {
+			return nil, ErrStoryNotFound
+		}
+		return nil, err
+	}
+	return &story, nil
+}
+
+func (s *StoryService) GetActiveStoriesByUser(ctx context.Context, userID string) []model.Story {
+	stories, err := s.stories.GetActiveByUser(ctx, userID)
+	if err != nil {
+		return []model.Story{}
 	}
 	return stories
-}
-
-func (s *StoryService) StartExpiryWorker(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.purgeExpired(time.Now().UTC())
-		}
-	}
-}
-
-func (s *StoryService) purgeExpired(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for id, story := range s.stories {
-		if storyExpired(story, now) {
-			delete(s.stories, id)
-		}
-	}
-}
-
-func storyExpired(story model.Story, now time.Time) bool {
-	if story.CreatedAt.IsZero() {
-		return true
-	}
-	if story.ExpiresAt.IsZero() {
-		return !story.CreatedAt.Add(PendingStoryTTL).After(now)
-	}
-	return !story.ExpiresAt.After(now)
-}
-
-func storyActive(story model.Story, now time.Time) bool {
-	return !story.ExpiresAt.IsZero() && story.ExpiresAt.After(now)
 }

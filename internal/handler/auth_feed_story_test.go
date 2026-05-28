@@ -1,15 +1,56 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/service"
+	"instagram_clone/internal/store"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+func newTestPGPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil || pool.Ping(context.Background()) != nil {
+		if pool != nil {
+			pool.Close()
+		}
+		t.Skip("postgres unavailable, skipping")
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM stories")
+		pool.Exec(context.Background(), "DELETE FROM users")
+		pool.Close()
+	})
+	return pool
+}
+
+func newTestRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	if client.Ping(context.Background()).Err() != nil {
+		_ = client.Close()
+		t.Skip("redis unavailable, skipping")
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// ── auth tests ───────────────────────────────────────────────────────────────
+
 func TestAuthHandlerSignupAndLogin(t *testing.T) {
-	router := NewAuthHandler(service.NewAuthService("test-secret")).Router()
+	pool := newTestPGPool(t)
+	authSvc := service.NewAuthService("test-secret", store.NewUserStore(pool))
+	router := NewAuthHandler(authSvc).Router()
 
 	signupRec := performRequest(router, http.MethodPost, "/signup", `{
 		"username": "sahil",
@@ -45,7 +86,9 @@ func TestAuthHandlerSignupAndLogin(t *testing.T) {
 }
 
 func TestAuthHandlerValidationAndConflict(t *testing.T) {
-	router := NewAuthHandler(service.NewAuthService("test-secret")).Router()
+	pool := newTestPGPool(t)
+	authSvc := service.NewAuthService("test-secret", store.NewUserStore(pool))
+	router := NewAuthHandler(authSvc).Router()
 
 	rec := performRequest(router, http.MethodPost, "/signup", `{"username":"","email":"sahil@example.com","password":"secret123"}`)
 	if rec.Code != http.StatusBadRequest {
@@ -65,11 +108,22 @@ func TestAuthHandlerValidationAndConflict(t *testing.T) {
 	assertErrorResponse(t, rec, "user already exists")
 }
 
-func TestFeedHandler(t *testing.T) {
-	feed := service.NewFeedService()
-	feed.AddFeedItem("user_123", model.FeedItem{MediaID: "media_1", UserID: "user_123"})
+// ── feed tests ────────────────────────────────────────────────────────────────
 
-	router := NewFeedHandler(feed).Router()
+func TestFeedHandler(t *testing.T) {
+	client := newTestRedisClient(t)
+	feedStore := store.NewFeedStore(client)
+	feedSvc := service.NewFeedService(feedStore)
+
+	// Seed one item directly via the service.
+	feedSvc.AddFeedItem(context.Background(), "user_123", model.FeedItem{
+		MediaID:   "media_1",
+		UserID:    "user_123",
+		CreatedAt: time.Now().UTC(),
+	})
+	t.Cleanup(func() { client.Del(context.Background(), "feed:user_123") })
+
+	router := NewFeedHandler(feedSvc).Router()
 	rec := performRequest(router, http.MethodGet, "/user_123?limit=1&offset=0", "")
 
 	if rec.Code != http.StatusOK {
@@ -84,7 +138,8 @@ func TestFeedHandler(t *testing.T) {
 }
 
 func TestFeedHandlerRejectsOtherUsers(t *testing.T) {
-	router := NewFeedHandler(service.NewFeedService()).Router()
+	client := newTestRedisClient(t)
+	router := NewFeedHandler(service.NewFeedService(store.NewFeedStore(client))).Router()
 
 	rec := performRequest(router, http.MethodGet, "/other_user", "")
 
@@ -94,16 +149,28 @@ func TestFeedHandlerRejectsOtherUsers(t *testing.T) {
 	assertErrorResponse(t, rec, "cannot access another user's feed")
 }
 
+// ── story tests ───────────────────────────────────────────────────────────────
+
 func TestStoryHandlerGenerateAndConfirm(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
-	// No live S3 server is needed: PresignPutObject is computed locally by the
-	// AWS SDK (no network call) and ConfirmUpload is purely in-memory.
-	storage, err := service.NewStorage(t.Context(), "http://s3.test:9000", "", "us-east-1", "instagram-media-test")
+
+	pool := newTestPGPool(t)
+	// A dummy user must exist because stories.user_id references users.id.
+	pool.Exec(context.Background(), `
+		INSERT INTO users (id, username, email, password_hash) VALUES
+		('user_123', 'test', 'test@example.com', 'x')
+		ON CONFLICT DO NOTHING`)
+
+	storyStore := store.NewStoryStore(pool)
+	mediaStore := store.NewMediaStore(pool)
+
+	// No live S3 server needed: PresignPutObject is computed locally by the AWS SDK.
+	storage, err := service.NewStorage(context.Background(), "http://s3.test:9000", "", "us-east-1", "instagram-media-test", mediaStore)
 	if err != nil {
 		t.Fatalf("NewStorage returned error: %v", err)
 	}
-	stories := service.NewStoryService(storage)
+	stories := service.NewStoryService(storage, storyStore)
 	router := NewStoryHandler(stories).Router()
 
 	createRec := performRequest(router, http.MethodPost, "/presigned-url", `{
