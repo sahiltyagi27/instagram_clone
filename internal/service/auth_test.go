@@ -1,16 +1,39 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"instagram_clone/internal/model"
+	"instagram_clone/internal/store"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
-	auth := NewAuthService("test-secret")
+func newTestAuthService(t *testing.T) *AuthService {
+	t.Helper()
 
-	signup, err := auth.Signup(model.SignupRequest{
+	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil || pool.Ping(context.Background()) != nil {
+		if pool != nil {
+			pool.Close()
+		}
+		t.Skip("postgres unavailable, skipping")
+	}
+	pool.Exec(context.Background(), "DELETE FROM users")
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM users")
+		pool.Close()
+	})
+	return NewAuthService("test-secret", store.NewUserStore(pool))
+}
+
+func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
+	auth := newTestAuthService(t)
+
+	signup, err := auth.Signup(context.Background(), model.SignupRequest{
 		Username: "sahil",
 		Email:    "SAHIL@example.com",
 		Password: "secret123",
@@ -36,7 +59,7 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 		t.Fatalf("token user id = %q, want %q", userID, signup.User.ID)
 	}
 
-	login, err := auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: "secret123"})
+	login, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "secret123"})
 	if err != nil {
 		t.Fatalf("Login returned error: %v", err)
 	}
@@ -46,9 +69,9 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 }
 
 func TestAuthServicePreservesPasswordWhitespace(t *testing.T) {
-	auth := NewAuthService("test-secret")
+	auth := newTestAuthService(t)
 
-	if _, err := auth.Signup(model.SignupRequest{
+	if _, err := auth.Signup(context.Background(), model.SignupRequest{
 		Username: "sahil",
 		Email:    "sahil@example.com",
 		Password: " secret123 ",
@@ -56,26 +79,27 @@ func TestAuthServicePreservesPasswordWhitespace(t *testing.T) {
 		t.Fatalf("Signup returned error: %v", err)
 	}
 
-	if _, err := auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: "secret123"}); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "secret123"}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("login without spaces error = %v, want ErrInvalidCredentials", err)
 	}
-	if _, err := auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: " secret123 "}); err != nil {
+	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: " secret123 "}); err != nil {
 		t.Fatalf("login with spaces returned error: %v", err)
 	}
 }
 
 func TestAuthServiceRejectsDuplicateAndInvalidLogin(t *testing.T) {
-	auth := NewAuthService("test-secret")
-	if _, err := auth.Signup(model.SignupRequest{Username: "sahil", Email: "sahil@example.com", Password: "secret123"}); err != nil {
+	auth := newTestAuthService(t)
+
+	if _, err := auth.Signup(context.Background(), model.SignupRequest{Username: "sahil", Email: "sahil@example.com", Password: "secret123"}); err != nil {
 		t.Fatalf("Signup returned error: %v", err)
 	}
 
-	_, err := auth.Signup(model.SignupRequest{Username: "other", Email: "sahil@example.com", Password: "secret123"})
+	_, err := auth.Signup(context.Background(), model.SignupRequest{Username: "other", Email: "sahil@example.com", Password: "secret123"})
 	if !errors.Is(err, ErrUserAlreadyExists) {
 		t.Fatalf("duplicate signup error = %v, want ErrUserAlreadyExists", err)
 	}
 
-	_, err = auth.Login(model.LoginRequest{Email: "sahil@example.com", Password: "wrong"})
+	_, err = auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "wrong"})
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("login error = %v, want ErrInvalidCredentials", err)
 	}
