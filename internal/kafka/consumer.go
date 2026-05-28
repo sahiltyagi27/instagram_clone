@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -37,7 +38,7 @@ func NewKafkaConsumer(broker string, processor *service.MediaProcessor, feed *se
 			GroupID:        "instagram-media-processor",
 			MinBytes:       1,
 			MaxBytes:       10e6,
-			CommitInterval: 0, // manual commit
+			CommitInterval: 0, // manual commit — offset advances only after processing succeeds
 		}),
 		storyReader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:        []string{broker},
@@ -92,8 +93,11 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
 			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
-			// Malformed message — no point retrying; route to DLQ and commit.
-			c.writeToDLQ(MediaUploadedTopic, msg, err)
+			// Malformed message — no point retrying; route to DLQ and commit only if DLQ succeeds.
+			if dlqErr := c.writeToDLQ(MediaUploadedTopic, msg, err); dlqErr != nil {
+				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", MediaUploadedTopic, "error", dlqErr)
+				continue
+			}
 			_ = c.mediaReader.CommitMessages(ctx, msg)
 			continue
 		}
@@ -101,27 +105,37 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 		span.SetAttributes(attribute.String("media.id", event.MediaID),
 			attribute.String("user.id", event.UserID))
 
-		err = retryWithBackoff(msgCtx, maxProcessRetries, func() error {
-			return c.processor.Process(msgCtx, event.S3Key, event.MediaType)
-		})
-		if err != nil {
-			slog.Error("process media: retries exhausted", "media_id", event.MediaID, "error", err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			span.End()
-			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
-			c.writeToDLQ(MediaUploadedTopic, msg, err)
-			_ = c.mediaReader.CommitMessages(ctx, msg)
-			continue
-		}
-
-		c.feed.AddFeedItem(msgCtx, event.UserID, model.FeedItem{
+		// Process the media and index the feed item as a single atomic unit so a
+		// Redis failure after a successful S3 transcode is retried and caught.
+		feedItem := model.FeedItem{
 			MediaID:      event.MediaID,
 			UserID:       event.UserID,
 			S3Key:        event.S3Key,
 			ThumbnailKey: event.S3Key + "/thumb",
 			CreatedAt:    event.CreatedAt,
+		}
+		processErr := retryWithBackoff(msgCtx, maxProcessRetries, func() error {
+			if err := c.processor.Process(msgCtx, event.S3Key, event.MediaType); err != nil {
+				return fmt.Errorf("process media: %w", err)
+			}
+			if err := c.feed.AddFeedItem(msgCtx, event.UserID, feedItem); err != nil {
+				return fmt.Errorf("index feed item: %w", err)
+			}
+			return nil
 		})
+		if processErr != nil {
+			slog.Error("media processing failed: retries exhausted", "media_id", event.MediaID, "error", processErr)
+			span.RecordError(processErr)
+			span.SetStatus(codes.Error, processErr.Error())
+			span.End()
+			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
+			if dlqErr := c.writeToDLQ(MediaUploadedTopic, msg, processErr); dlqErr != nil {
+				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", MediaUploadedTopic, "error", dlqErr)
+				continue
+			}
+			_ = c.mediaReader.CommitMessages(ctx, msg)
+			continue
+		}
 
 		slog.Info("media event processed", "media_id", event.MediaID, "user_id", event.UserID)
 		telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "ok").Inc()
@@ -160,7 +174,10 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
 			telemetry.KafkaMessagesConsumed.WithLabelValues(StoryUploadedTopic, "error").Inc()
-			c.writeToDLQ(StoryUploadedTopic, msg, err)
+			if dlqErr := c.writeToDLQ(StoryUploadedTopic, msg, err); dlqErr != nil {
+				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", StoryUploadedTopic, "error", dlqErr)
+				continue
+			}
 			_ = c.storyReader.CommitMessages(ctx, msg)
 			continue
 		}
@@ -183,9 +200,13 @@ func (c *KafkaConsumer) Close() error {
 }
 
 // writeToDLQ publishes a failed message to the dead-letter topic for the given
-// source topic. Uses a background context so a cancelled parent ctx (e.g. on
+// source topic. Uses a background context so a cancelled parent context (e.g. on
 // shutdown) does not prevent the DLQ write from completing.
-func (c *KafkaConsumer) writeToDLQ(topic string, msg kafka.Message, cause error) {
+//
+// Returns an error if the DLQ write itself fails. Callers must NOT commit the
+// source offset when this returns an error — leaving it uncommitted means the
+// message will be replayed on the next consumer restart.
+func (c *KafkaConsumer) writeToDLQ(topic string, msg kafka.Message, cause error) error {
 	dlqTopic := topic + "-dlq"
 	dlqMsg := kafka.Message{
 		Topic:   dlqTopic,
@@ -194,10 +215,10 @@ func (c *KafkaConsumer) writeToDLQ(topic string, msg kafka.Message, cause error)
 		Headers: append(msg.Headers, kafka.Header{Key: "dlq-error", Value: []byte(cause.Error())}),
 	}
 	if err := c.dlqWriter.WriteMessages(context.Background(), dlqMsg); err != nil {
-		slog.Error("write to DLQ failed", "topic", dlqTopic, "error", err)
-	} else {
-		slog.Warn("message routed to DLQ", "topic", dlqTopic, "key", string(msg.Key))
+		return fmt.Errorf("write to DLQ %q: %w", dlqTopic, err)
 	}
+	slog.Warn("message routed to DLQ", "topic", dlqTopic, "key", string(msg.Key))
+	return nil
 }
 
 // retryWithBackoff calls op up to maxRetries times. On each failure after the

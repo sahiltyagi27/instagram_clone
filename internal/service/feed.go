@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/store"
@@ -22,10 +21,11 @@ func NewFeedService(feed *store.FeedStore) *FeedService {
 	return &FeedService{feed: feed}
 }
 
-func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model.FeedItem) {
+func (s *FeedService) AddFeedItem(ctx context.Context, userID string, item model.FeedItem) error {
 	if err := s.feed.AddItem(ctx, userID, item); err != nil {
-		slog.Error("add feed item to redis", "user_id", userID, "error", err)
+		return fmt.Errorf("add feed item to redis: %w", err)
 	}
+	return nil
 }
 
 func (s *FeedService) GetFeed(ctx context.Context, userID string, limit int, cursor string) (model.FeedResponse, error) {
