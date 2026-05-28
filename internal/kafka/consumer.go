@@ -20,7 +20,10 @@ import (
 
 var consumerTracer = otel.Tracer("instagram_clone/kafka/consumer")
 
-const maxProcessRetries = 3
+const (
+	maxProcessRetries = 3
+	dlqRetryInterval  = 2 * time.Second
+)
 
 type KafkaConsumer struct {
 	mediaReader *kafka.Reader
@@ -93,12 +96,10 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
 			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
-			// Malformed message — no point retrying; route to DLQ and commit only if DLQ succeeds.
-			if dlqErr := c.writeToDLQ(MediaUploadedTopic, msg, err); dlqErr != nil {
-				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", MediaUploadedTopic, "error", dlqErr)
-				continue
+			// Malformed message — no point retrying; route to DLQ then commit.
+			if !c.dlqThenCommit(ctx, c.mediaReader, MediaUploadedTopic, msg, err) {
+				return // shutdown before DLQ succeeded; offset left uncommitted
 			}
-			_ = c.mediaReader.CommitMessages(ctx, msg)
 			continue
 		}
 
@@ -124,23 +125,27 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			return nil
 		})
 		if processErr != nil {
+			// Shutdown is not a processing failure: leave the offset uncommitted so
+			// the still-valid message is replayed on restart rather than dead-lettered.
+			if ctx.Err() != nil {
+				span.End()
+				return
+			}
 			slog.Error("media processing failed: retries exhausted", "media_id", event.MediaID, "error", processErr)
 			span.RecordError(processErr)
 			span.SetStatus(codes.Error, processErr.Error())
 			span.End()
 			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
-			if dlqErr := c.writeToDLQ(MediaUploadedTopic, msg, processErr); dlqErr != nil {
-				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", MediaUploadedTopic, "error", dlqErr)
-				continue
+			if !c.dlqThenCommit(ctx, c.mediaReader, MediaUploadedTopic, msg, processErr) {
+				return
 			}
-			_ = c.mediaReader.CommitMessages(ctx, msg)
 			continue
 		}
 
 		slog.Info("media event processed", "media_id", event.MediaID, "user_id", event.UserID)
 		telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "ok").Inc()
 		span.End()
-		_ = c.mediaReader.CommitMessages(ctx, msg)
+		c.commit(ctx, c.mediaReader, MediaUploadedTopic, msg)
 	}
 }
 
@@ -174,11 +179,9 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
 			telemetry.KafkaMessagesConsumed.WithLabelValues(StoryUploadedTopic, "error").Inc()
-			if dlqErr := c.writeToDLQ(StoryUploadedTopic, msg, err); dlqErr != nil {
-				slog.Error("DLQ unavailable, leaving offset uncommitted", "topic", StoryUploadedTopic, "error", dlqErr)
-				continue
+			if !c.dlqThenCommit(ctx, c.storyReader, StoryUploadedTopic, msg, err) {
+				return
 			}
-			_ = c.storyReader.CommitMessages(ctx, msg)
 			continue
 		}
 
@@ -188,7 +191,7 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 		slog.Info("story uploaded event consumed", "story_id", event.StoryID, "user_id", event.UserID, "s3_key", event.S3Key)
 		telemetry.KafkaMessagesConsumed.WithLabelValues(StoryUploadedTopic, "ok").Inc()
 		span.End()
-		_ = c.storyReader.CommitMessages(ctx, msg)
+		c.commit(ctx, c.storyReader, StoryUploadedTopic, msg)
 	}
 }
 
@@ -199,13 +202,47 @@ func (c *KafkaConsumer) Close() error {
 	return errors.Join(mediaErr, storyErr, dlqErr)
 }
 
+// dlqThenCommit routes msg to its dead-letter topic and then commits the source
+// offset. The DLQ write is retried with a fixed interval until it succeeds,
+// because committing the source offset past an un-dead-lettered message would
+// lose it: a Kafka commit advances the partition's high-water mark, so any
+// later successful commit would implicitly commit this offset too. Blocking
+// here keeps the consumer from advancing past a message it could not persist.
+//
+// Returns false if ctx is cancelled before the DLQ write succeeds, in which
+// case the offset is left uncommitted and the message is replayed on restart.
+func (c *KafkaConsumer) dlqThenCommit(ctx context.Context, reader *kafka.Reader, topic string, msg kafka.Message, cause error) bool {
+	for {
+		if err := c.writeToDLQ(topic, msg, cause); err != nil {
+			slog.Error("DLQ write failed; not advancing past this offset", "topic", topic, "offset", msg.Offset, "error", err)
+			telemetry.KafkaMessagesConsumed.WithLabelValues(topic, "dlq_error").Inc()
+			select {
+			case <-ctx.Done():
+				slog.Warn("shutdown before DLQ write succeeded; offset left uncommitted for replay", "topic", topic, "offset", msg.Offset)
+				return false
+			case <-time.After(dlqRetryInterval):
+				continue
+			}
+		}
+		c.commit(ctx, reader, topic, msg)
+		return true
+	}
+}
+
+// commit advances the consumer offset for msg, logging and counting any failure.
+// A failed commit causes at-most a duplicate (re-processed) message on restart,
+// never a lost one, so it is safe to log and move on.
+func (c *KafkaConsumer) commit(ctx context.Context, reader *kafka.Reader, topic string, msg kafka.Message) {
+	if err := reader.CommitMessages(ctx, msg); err != nil {
+		slog.Error("commit kafka offset", "topic", topic, "offset", msg.Offset, "error", err)
+		telemetry.KafkaMessagesConsumed.WithLabelValues(topic, "commit_error").Inc()
+	}
+}
+
 // writeToDLQ publishes a failed message to the dead-letter topic for the given
 // source topic. Uses a background context so a cancelled parent context (e.g. on
-// shutdown) does not prevent the DLQ write from completing.
-//
-// Returns an error if the DLQ write itself fails. Callers must NOT commit the
-// source offset when this returns an error — leaving it uncommitted means the
-// message will be replayed on the next consumer restart.
+// shutdown) does not interrupt an in-flight DLQ write. Returns an error if the
+// write fails so the caller can decide whether to commit the source offset.
 func (c *KafkaConsumer) writeToDLQ(topic string, msg kafka.Message, cause error) error {
 	dlqTopic := topic + "-dlq"
 	dlqMsg := kafka.Message{
@@ -223,7 +260,8 @@ func (c *KafkaConsumer) writeToDLQ(topic string, msg kafka.Message, cause error)
 
 // retryWithBackoff calls op up to maxRetries times. On each failure after the
 // first it waits 1s, 2s, 4s, … before trying again. Returns the last error if
-// all attempts fail, or nil on the first success.
+// all attempts fail, or nil on the first success. A cancelled ctx aborts early
+// and returns ctx.Err().
 func retryWithBackoff(ctx context.Context, maxRetries int, op func() error) error {
 	var err error
 	for attempt := range maxRetries {
