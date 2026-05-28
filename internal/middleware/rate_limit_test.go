@@ -10,7 +10,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// newTestRateLimiter opens a Redis connection scoped to userID.
+const testScope = "test"
+
+// newTestRateLimiter opens a Redis connection scoped to scope+userID.
 // The rate-limit key is flushed before the test starts AND after it finishes
 // so leftover GCRA state from a previous run never bleeds into the next test.
 func newTestRateLimiter(t *testing.T, userID string) *redis_rate.Limiter {
@@ -20,7 +22,7 @@ func newTestRateLimiter(t *testing.T, userID string) *redis_rate.Limiter {
 		_ = client.Close()
 		t.Skip("redis unavailable, skipping")
 	}
-	key := "ratelimit:" + userID
+	key := "ratelimit:" + testScope + ":" + userID
 	// Pre-clean so a previous failed run cannot pollute this one.
 	client.Del(context.Background(), key)
 	t.Cleanup(func() {
@@ -45,7 +47,7 @@ func TestRateLimitAllowsRequestsUnderLimit(t *testing.T) {
 	const userID = "rl_allow_user"
 	limiter := newTestRateLimiter(t, userID)
 	// Burst of 5 — first 5 requests must all pass.
-	mw := RateLimit(limiter, redis_rate.PerMinute(5))
+	mw := RateLimit(limiter, testScope, redis_rate.PerMinute(5))
 	handler := mw(okHandler())
 
 	for i := range 5 {
@@ -64,7 +66,7 @@ func TestRateLimitRejectsRequestsOverLimit(t *testing.T) {
 	const userID = "rl_reject_user"
 	limiter := newTestRateLimiter(t, userID)
 	// Burst of 2 — 3rd request must be rejected.
-	mw := RateLimit(limiter, redis_rate.PerMinute(2))
+	mw := RateLimit(limiter, testScope, redis_rate.PerMinute(2))
 	handler := mw(okHandler())
 
 	for i := range 2 {
@@ -88,7 +90,7 @@ func TestRateLimitRejectsRequestsOverLimit(t *testing.T) {
 func TestRateLimitSkipsWhenNoUserInContext(t *testing.T) {
 	const userID = "rl_nouser_user"
 	limiter := newTestRateLimiter(t, userID)
-	mw := RateLimit(limiter, redis_rate.PerMinute(1))
+	mw := RateLimit(limiter, testScope, redis_rate.PerMinute(1))
 	handler := mw(okHandler())
 
 	// Request with no user ID in context — middleware must pass through.

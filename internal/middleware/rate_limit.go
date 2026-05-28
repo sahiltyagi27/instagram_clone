@@ -13,9 +13,12 @@ import (
 // the GCRA algorithm backed by Redis. Requests from users who exceed the limit
 // receive 429 Too Many Requests with Retry-After and X-RateLimit-* headers.
 //
+// scope is included in the Redis key so that separate route groups (e.g.
+// "write" vs "read") maintain independent budgets for the same user.
+//
 // If Redis is unavailable the middleware fails open (allows the request) so a
 // Redis outage does not take the whole API down.
-func RateLimit(limiter *redis_rate.Limiter, rate redis_rate.Limit) func(http.Handler) http.Handler {
+func RateLimit(limiter *redis_rate.Limiter, scope string, rate redis_rate.Limit) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := UserIDFromContext(r.Context())
@@ -26,7 +29,7 @@ func RateLimit(limiter *redis_rate.Limiter, rate redis_rate.Limit) func(http.Han
 				return
 			}
 
-			res, err := limiter.Allow(r.Context(), "ratelimit:"+userID, rate)
+			res, err := limiter.Allow(r.Context(), "ratelimit:"+scope+":"+userID, rate)
 			if err != nil {
 				// Redis error — fail open so a cache outage doesn't take down the API.
 				slog.ErrorContext(r.Context(), "rate limit check failed", "user_id", userID, "error", err)

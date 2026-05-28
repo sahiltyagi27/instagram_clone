@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"strconv"
 
 	"instagram_clone/internal/model"
@@ -22,6 +23,18 @@ func NewFeedStore(client *redis.Client) *FeedStore {
 	return &FeedStore{client: client}
 }
 
+// itemScore converts a FeedItem into a unique Redis sorted-set score.
+//
+// Base: CreatedAt.UnixMilli() — newest items have the highest score.
+// Tie-breaker: a 3-digit suffix derived from a CRC32 of the MediaID.
+// Multiplying milliseconds by 1000 and adding the suffix makes same-millisecond
+// scores unique per MediaID, so cursor pagination never skips items at a
+// score boundary when two uploads arrive within the same millisecond.
+func itemScore(item model.FeedItem) float64 {
+	suffix := int64(crc32.ChecksumIEEE([]byte(item.MediaID)) % 1000)
+	return float64(item.CreatedAt.UnixMilli()*1000 + suffix)
+}
+
 func (s *FeedStore) AddItem(ctx context.Context, userID string, item model.FeedItem) error {
 	data, err := json.Marshal(item)
 	if err != nil {
@@ -29,7 +42,7 @@ func (s *FeedStore) AddItem(ctx context.Context, userID string, item model.FeedI
 	}
 
 	key := feedKeyPrefix + userID
-	score := float64(item.CreatedAt.UnixMilli())
+	score := itemScore(item)
 
 	pipe := s.client.Pipeline()
 	pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: string(data)})

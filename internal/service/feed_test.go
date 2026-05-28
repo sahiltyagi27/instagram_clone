@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -93,12 +94,18 @@ func TestFeedServiceConcurrentWrites(t *testing.T) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
-		go func() {
+		go func(n int) {
 			defer wg.Done()
-			feed.AddFeedItem(ctx, "user_123", model.FeedItem{UserID: "user_123", CreatedAt: time.Now().UTC()})
-		}()
+			// Use a unique MediaID per item so the crc32 tie-breaker gives each
+			// concurrent upload a distinct score even within the same millisecond.
+			feed.AddFeedItem(ctx, "user_123", model.FeedItem{
+				MediaID:   fmt.Sprintf("media_%d", n),
+				UserID:    "user_123",
+				CreatedAt: time.Now().UTC(),
+			})
+		}(i)
 	}
 	wg.Wait()
 

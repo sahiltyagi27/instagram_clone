@@ -128,17 +128,19 @@ func main() {
 	router.Mount("/auth", handler.NewAuthHandler(authService).Router())
 
 	// Write operations: stricter limit (20 req/min per user).
+	// Key: ratelimit:write:{userID} — independent from the read budget.
 	router.Group(func(r chi.Router) {
 		r.Use(middleware.JWT(jwtSecret))
-		r.Use(middleware.RateLimit(rateLimiter, redis_rate.PerMinute(20)))
+		r.Use(middleware.RateLimit(rateLimiter, "write", redis_rate.PerMinute(20)))
 		r.Mount("/", handler.NewUploadHandler(storage, producer).Router())
 		r.Mount("/stories", handler.NewStoryHandler(storyService, producer).Router())
 	})
 
 	// Read operations: more lenient limit (60 req/min per user).
+	// Key: ratelimit:read:{userID} — independent from the write budget.
 	router.Group(func(r chi.Router) {
 		r.Use(middleware.JWT(jwtSecret))
-		r.Use(middleware.RateLimit(rateLimiter, redis_rate.PerMinute(60)))
+		r.Use(middleware.RateLimit(rateLimiter, "read", redis_rate.PerMinute(60)))
 		r.Mount("/feed", handler.NewFeedHandler(feedService).Router())
 	})
 
