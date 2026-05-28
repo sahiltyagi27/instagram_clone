@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	appkafka "instagram_clone/internal/kafka"
 	"instagram_clone/internal/model"
 	"instagram_clone/internal/service"
 
@@ -13,11 +14,16 @@ import (
 )
 
 type UploadHandler struct {
-	storage *service.Storage
+	storage  *service.Storage
+	producer *appkafka.KafkaProducer
 }
 
-func NewUploadHandler(storage *service.Storage) *UploadHandler {
-	return &UploadHandler{storage: storage}
+func NewUploadHandler(storage *service.Storage, producer ...*appkafka.KafkaProducer) *UploadHandler {
+	var p *appkafka.KafkaProducer
+	if len(producer) > 0 {
+		p = producer[0]
+	}
+	return &UploadHandler{storage: storage, producer: p}
 }
 
 func (h *UploadHandler) Router() http.Handler {
@@ -35,7 +41,7 @@ func (h *UploadHandler) createPresignedURL(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	req.UserID = strings.TrimSpace(req.UserID)
+	req.UserID = userIDFromRequest(r, req.UserID)
 	req.FileName = strings.TrimSpace(req.FileName)
 	req.ContentType = strings.TrimSpace(req.ContentType)
 
@@ -64,7 +70,7 @@ func (h *UploadHandler) confirmMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.UserID = strings.TrimSpace(req.UserID)
+	req.UserID = userIDFromRequest(r, req.UserID)
 	req.MediaID = strings.TrimSpace(req.MediaID)
 	if req.UserID == "" || req.MediaID == "" {
 		writeError(w, http.StatusBadRequest, "user_id and media_id are required")
@@ -79,6 +85,13 @@ func (h *UploadHandler) confirmMedia(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to confirm media upload")
 		return
+	}
+
+	if h.producer != nil {
+		if err := h.producer.PublishMediaUploaded(r.Context(), media.ID, media.UserID, media.S3Key, string(media.Type)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to publish media upload event")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, media)

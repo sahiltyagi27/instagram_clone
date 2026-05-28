@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -127,6 +129,59 @@ func (s *Storage) GetMedia(_ context.Context, mediaID string) (*model.Media, err
 	}
 
 	return &media, nil
+}
+
+func (s *Storage) Bucket() string {
+	return s.bucket
+}
+
+func (s *Storage) PresignPutObject(ctx context.Context, key, contentType string) (string, error) {
+	presigned, err := s.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = PresignedURLExpiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("presign put object: %w", err)
+	}
+	return presigned.URL, nil
+}
+
+func (s *Storage) GetObject(ctx context.Context, key string) ([]byte, string, error) {
+	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("get object: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read object: %w", err)
+	}
+
+	contentType := ""
+	if resp.ContentType != nil {
+		contentType = *resp.ContentType
+	}
+	return data, contentType, nil
+}
+
+func (s *Storage) PutObject(ctx context.Context, key, contentType string, data []byte) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+		Body:        bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("put object: %w", err)
+	}
+	return nil
 }
 
 func newID() (string, error) {

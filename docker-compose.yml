@@ -1,4 +1,36 @@
 services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    command:
+      - /bin/bash
+      - -c
+      - |
+        /etc/confluent/docker/run &
+        until kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do
+          sleep 2
+        done
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic media-uploaded --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic story-uploaded --partitions 1 --replication-factor 1
+        wait
+
   localstack:
     image: localstack/localstack:3
     ports:
@@ -17,6 +49,8 @@ services:
       AWS_REGION: us-east-1
       S3_BUCKET: instagram-media
       S3_ENDPOINT: http://localstack:4566
+      JWT_SECRET: dev-secret-do-not-use-in-prod
+      KAFKA_BROKER: kafka:9092
     depends_on:
+      - kafka
       - localstack
-

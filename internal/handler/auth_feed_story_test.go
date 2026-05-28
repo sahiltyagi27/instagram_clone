@@ -1,0 +1,119 @@
+package handler
+
+import (
+	"net/http"
+	"testing"
+
+	"instagram_clone/internal/model"
+	"instagram_clone/internal/service"
+)
+
+func TestAuthHandlerSignupAndLogin(t *testing.T) {
+	router := NewAuthHandler(service.NewAuthService("test-secret")).Router()
+
+	signupRec := performRequest(router, http.MethodPost, "/signup", `{
+		"username": "sahil",
+		"email": "sahil@example.com",
+		"password": "secret123"
+	}`)
+	if signupRec.Code != http.StatusCreated {
+		t.Fatalf("signup status = %d, want %d; body: %s", signupRec.Code, http.StatusCreated, signupRec.Body.String())
+	}
+
+	var signup model.AuthResponse
+	decodeResponse(t, signupRec, &signup)
+	if signup.Token == "" {
+		t.Fatal("expected signup token")
+	}
+	if signup.User.PasswordHash != "" {
+		t.Fatal("expected password hash to be omitted")
+	}
+
+	loginRec := performRequest(router, http.MethodPost, "/login", `{
+		"email": "sahil@example.com",
+		"password": "secret123"
+	}`)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, want %d; body: %s", loginRec.Code, http.StatusOK, loginRec.Body.String())
+	}
+
+	var login model.AuthResponse
+	decodeResponse(t, loginRec, &login)
+	if login.User.ID != signup.User.ID {
+		t.Fatalf("login user id = %q, want %q", login.User.ID, signup.User.ID)
+	}
+}
+
+func TestAuthHandlerValidationAndConflict(t *testing.T) {
+	router := NewAuthHandler(service.NewAuthService("test-secret")).Router()
+
+	rec := performRequest(router, http.MethodPost, "/signup", `{"username":"","email":"sahil@example.com","password":"secret123"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	assertErrorResponse(t, rec, "username, email, and password are required")
+
+	rec = performRequest(router, http.MethodPost, "/signup", `{"username":"sahil","email":"sahil@example.com","password":"secret123"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	rec = performRequest(router, http.MethodPost, "/signup", `{"username":"other","email":"sahil@example.com","password":"secret123"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+	assertErrorResponse(t, rec, "user already exists")
+}
+
+func TestFeedHandler(t *testing.T) {
+	feed := service.NewFeedService()
+	feed.AddFeedItem("user_123", model.FeedItem{MediaID: "media_1", UserID: "user_123"})
+
+	router := NewFeedHandler(feed).Router()
+	rec := performRequest(router, http.MethodGet, "/user_123?limit=1&offset=0", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp model.FeedResponse
+	decodeResponse(t, rec, &resp)
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("feed response = %#v, want one item", resp)
+	}
+}
+
+func TestStoryHandlerGenerateAndConfirm(t *testing.T) {
+	storage, err := service.NewStorage(t.Context(), "http://localhost:4566", "us-east-1", "instagram-media-test")
+	if err != nil {
+		t.Fatalf("NewStorage returned error: %v", err)
+	}
+	stories := service.NewStoryService(storage)
+	router := NewStoryHandler(stories).Router()
+
+	createRec := performRequest(router, http.MethodPost, "/presigned-url", `{
+		"user_id": "user_123",
+		"file_name": "story.jpg",
+		"content_type": "image/jpeg"
+	}`)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var created model.StoryPresignedURLResponse
+	decodeResponse(t, createRec, &created)
+
+	confirmRec := performRequest(router, http.MethodPost, "/confirm", `{
+		"user_id": "user_123",
+		"story_id": "`+created.StoryID+`"
+	}`)
+	if confirmRec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", confirmRec.Code, http.StatusOK, confirmRec.Body.String())
+	}
+
+	var story model.Story
+	decodeResponse(t, confirmRec, &story)
+	if story.ID != created.StoryID {
+		t.Fatalf("story id = %q, want %q", story.ID, created.StoryID)
+	}
+}
