@@ -163,8 +163,9 @@ func main() {
 	}
 }
 
-// runPendingCleanup periodically deletes media and story rows that were never
-// confirmed within the pending TTL window (matching the presigned URL expiry).
+// runPendingCleanup periodically:
+//   - deletes media and story rows never confirmed within the pending TTL window
+//   - physically removes confirmed stories whose 24-hour TTL has elapsed
 func runPendingCleanup(ctx context.Context, media *store.MediaStore, stories *store.StoryStore) {
 	ticker := time.NewTicker(store.PendingUploadTTL)
 	defer ticker.Stop()
@@ -178,6 +179,9 @@ func runPendingCleanup(ctx context.Context, media *store.MediaStore, stories *st
 			}
 			if err := stories.DeleteStalePending(ctx); err != nil {
 				slog.Error("cleanup stale pending stories", "error", err)
+			}
+			if err := stories.DeleteExpired(ctx); err != nil {
+				slog.Error("cleanup expired stories", "error", err)
 			}
 		}
 	}

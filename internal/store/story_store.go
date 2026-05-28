@@ -105,3 +105,14 @@ func (s *StoryStore) DeleteStalePending(ctx context.Context) error {
 	}
 	return nil
 }
+
+// DeleteExpired physically removes confirmed story rows whose 24-hour TTL has
+// elapsed. Called periodically so expired stories do not accumulate forever.
+func (s *StoryStore) DeleteExpired(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM stories WHERE expires_at IS NOT NULL AND expires_at < NOW()`)
+	if err != nil {
+		return fmt.Errorf("delete expired stories: %w", err)
+	}
+	return nil
+}
