@@ -63,11 +63,6 @@ func (c *KafkaConsumer) consumeMedia(ctx context.Context) {
 			}
 			slog.Error("read media kafka message", "error", err)
 			telemetry.KafkaMessagesConsumed.WithLabelValues(MediaUploadedTopic, "error").Inc()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
 			continue
 		}
 
@@ -123,11 +118,6 @@ func (c *KafkaConsumer) consumeStories(ctx context.Context) {
 			}
 			slog.Error("read story kafka message", "error", err)
 			telemetry.KafkaMessagesConsumed.WithLabelValues(StoryUploadedTopic, "error").Inc()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
 			continue
 		}
 
