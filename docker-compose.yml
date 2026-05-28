@@ -55,6 +55,16 @@ services:
       exit 0
       "
 
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8090:8080"   # Browser UI — open http://localhost:8090
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      - kafka
+
   jaeger:
     image: jaegertracing/all-in-one:1.57
     ports:
