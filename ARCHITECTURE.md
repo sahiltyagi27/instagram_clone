@@ -1,8 +1,15 @@
 # Architecture
 
+A layer-by-layer walkthrough of the service. For the high-level diagrams,
+API reference, and setup, see [`README.md`](./README.md).
+
 ## What is this project?
 
-A backend service that replicates the core upload/feed/stories mechanics of Instagram. There is no frontend — it is a pure REST API. A user can register, upload photos/videos, post stories, and get a feed of their own uploaded content.
+A backend service that replicates the core mechanics of Instagram — uploads,
+stories, a social graph (follows), likes/comments, and a fan-out feed. There is
+no frontend; it is a pure REST API. Structured data lives in **Postgres**, the
+feed and rate-limit counters live in **Redis**, media bytes live in **S3/MinIO**,
+and asynchronous work flows over **Kafka**.
 
 ---
 
@@ -12,12 +19,18 @@ A backend service that replicates the core upload/feed/stories mechanics of Inst
 cmd/server/main.go          ← entry point, wires everything together
 internal/
   handler/                  ← HTTP layer (routes, request parsing, responses)
-  service/                  ← business logic
+  service/                  ← business logic, validation, error translation
+  store/                    ← data access: Postgres + Redis, pg error-code mapping
   model/                    ← data types shared across layers
-  kafka/                    ← event producer and consumer
-  middleware/               ← JWT auth middleware
+  kafka/                    ← event producer and consumer (retry + DLQ)
+  middleware/               ← JWT auth, per-user rate limiting
   telemetry/                ← metrics, tracing, Kafka header carrier
+  db/                       ← Postgres pool + Redis client constructors
+  migrations/               ← golang-migrate SQL, applied on startup
 ```
+
+The dependency direction is strictly **handler → service → store**. Handlers
+never touch the database directly; stores never contain business rules.
 
 ---
 
@@ -25,19 +38,20 @@ internal/
 
 ### 1. Entry Point — `main.go`
 
-Everything gets created and connected here. On startup it:
+Everything is constructed and connected here. On startup it:
 
-- Initialises the structured logger (`slog`)
-- Connects to Jaeger for distributed tracing (OTel)
-- Creates a `Storage` (S3/MinIO client)
-- Creates all services: `AuthService`, `StoryService`, `FeedService`, `MediaProcessor`
-- Creates a Kafka producer and consumer
-- Starts the story expiry background worker
-- Starts the Kafka consumer in a goroutine
-- Registers all HTTP routes on a Chi router
+- Initialises the structured logger (`slog`, JSON output)
+- Connects to Jaeger for distributed tracing (OTel) — warns and continues if unavailable
+- Opens the Postgres pool and runs pending migrations
+- Connects to Redis
+- Creates all stores (`User`, `Media`, `Story`, `Feed`, `Follow`, `Like`, `Comment`)
+- Creates the S3/MinIO `Storage` client
+- Creates all services and the Kafka producer/consumer
+- Starts the Kafka consumer and the pending-cleanup worker as goroutines
+- Registers HTTP routes (grouped by rate-limit budget) on a chi router
 - Listens on `:8080`
 
-When a `SIGTERM` or `Ctrl+C` arrives, it shuts the HTTP server down gracefully within 10 seconds.
+On `SIGTERM`/`Ctrl+C` it shuts the HTTP server down gracefully within 10 seconds.
 
 ---
 
@@ -45,118 +59,173 @@ When a `SIGTERM` or `Ctrl+C` arrives, it shuts the HTTP server down gracefully w
 
 **Endpoints:** `POST /auth/signup` and `POST /auth/login` (both unauthenticated)
 
-- **Signup:** takes username, email, password → hashes the password with **bcrypt** → generates a random user ID → issues a **JWT** signed with HS256 → stores the user in an in-memory map (keyed by ID and by email) → returns the user + token
-- **Login:** looks up the user by email → verifies the bcrypt hash → issues a new JWT → returns user + token
+- **Signup:** hashes the password with **bcrypt**, generates a random user ID,
+  persists the user in Postgres, and issues a **JWT** (HS256).
+- **Login:** looks up the user by email, verifies the bcrypt hash, issues a new JWT.
 
-The JWT contains only the `sub` (user ID) claim and expires in 24 hours. The `PasswordHash` is never returned in responses — `publicUser()` strips it before sending.
+The JWT carries only the `sub` (user ID) claim and expires in 24 hours. The
+`PasswordHash` is stripped from every response.
 
 ---
 
 ### 3. JWT Middleware — `middleware/auth.go`
 
-All routes except `/auth/*` and `/metrics` are protected by this middleware.
-
-It reads the `Authorization: Bearer <token>` header, validates the JWT signature and expiry, extracts the user ID from the `sub` claim, and stores it in the request context. Any subsequent handler can call `userIDFromRequest(r)` to get the authenticated user ID — no need to trust a `user_id` field in the request body.
+All routes except `/auth/*` and `/metrics` are protected. The middleware reads
+`Authorization: Bearer <token>`, validates signature and expiry, extracts the
+user ID from the `sub` claim, and stores it in the request context. Handlers
+read it via `userIDFromRequest(r)` — they never trust a `user_id` in the body.
 
 ---
 
-### 4. Media Upload — `service/storage.go` + `handler/upload.go`
+### 4. Rate Limiting — `middleware/rate_limit.go`
 
-A **two-step upload flow** — the client never uploads through the app server, it goes directly to S3/MinIO.
+Per-user GCRA limiting backed by Redis, keyed `ratelimit:{scope}:{userID}`:
+
+- `RateLimit(scope, rate)` — fixed scope, used for the write (20/min) and read
+  (60/min) groups.
+- `RateLimitByMethod(writeRate, readRate)` — charges `GET`/`HEAD` to the read
+  budget and mutating methods to the write budget. Used for the social routes,
+  which mix reads and writes under the same path prefixes and so can't be split
+  across groups by mounting.
+
+If Redis errors, the limiter **fails open** (allows the request) so a cache
+outage doesn't take the API down. Over-limit requests get `429` with
+`Retry-After` and `X-RateLimit-*` headers.
+
+---
+
+### 5. Media Upload — `service/storage.go` + `handler/upload.go`
+
+A **two-step upload flow** — the client uploads directly to S3/MinIO, never
+through the app server.
 
 **Step 1 — `POST /presigned-url`**
-
-- Generates a random `media_id`
-- Builds an S3 key: `users/{user_id}/{media_id}/{filename}`
-- Calls the AWS SDK's `PresignPutObject` to generate a time-limited signed PUT URL (15 minutes)
-- Stores a `Media` record in memory with `status: pending`
-- Returns the `media_id` and the `upload_url` to the client
+- Generates a random `media_id` and an S3 key `users/{user_id}/{media_id}/{filename}`
+- Calls the AWS SDK's `PresignPutObject` for a 15-minute signed PUT URL
+- Persists a `media` row with `status = pending`
+- Returns `media_id` + `upload_url`
 
 **Step 2 — `POST /media/confirm`**
+- Verifies the media belongs to the authenticated user
+- Marks it `uploaded` and stamps `uploaded_at` — **idempotent**: re-confirming
+  matches an already-uploaded row and preserves `uploaded_at` via `COALESCE`
+- Publishes a `media-uploaded` Kafka event
+- Returns the updated media
 
-- Client sends the `media_id` after it has PUT the file to S3
-- Finds the media record in memory, checks it belongs to the authenticated user
-- Sets `status: uploaded` and `uploaded_at`
-- Publishes a `media-uploaded` event to Kafka
-- Returns the updated media object
-
-There is also `GET /media/{id}` to fetch a media record by ID at any time.
-
-The presign client uses `localhost:9000` (public endpoint) while the internal S3 client uses `minio:9000` (Docker network) — these are kept separate so generated URLs are reachable from outside Docker without breaking the signature.
-
----
-
-### 5. Kafka — `kafka/producer.go` + `kafka/consumer.go`
-
-**Two topics:**
-
-| Topic | Published by | Consumed by |
-|---|---|---|
-| `media-uploaded` | `POST /media/confirm` | `consumeMedia` goroutine |
-| `story-uploaded` | `POST /stories/confirm` | `consumeStories` goroutine |
-
-**Producer:**
-- Serialises the event as JSON
-- Injects the current OTel trace context into the Kafka message headers so consumers can link their spans to the same trace
-- Writes to the appropriate topic
-
-**Consumer:**
-- Two goroutines, one per topic, running infinite read loops
-- On each message, extracts the trace context from headers and starts a child span
-- `media-uploaded` handler: calls `MediaProcessor.Process()` to generate thumbnails, then calls `FeedService.AddFeedItem()` to add it to the user's feed
-- `story-uploaded` handler: currently just logs — story fan-out (notifications, analytics) is a TODO
-- On read error (e.g. Kafka unavailable at startup), waits 2 seconds before retrying — context-aware so it shuts down cleanly on `SIGTERM`
+`GET /media/{id}` fetches a record by ID. The presign client uses the public
+endpoint (`localhost:9000`) while the internal SDK client uses the Docker
+endpoint (`minio:9000`), kept separate so generated URLs work from the host
+without breaking the signature.
 
 ---
 
-### 6. Media Processor — `service/processor.go`
+### 6. Kafka — `kafka/producer.go` + `kafka/consumer.go`
 
-Called by the Kafka consumer after a photo upload is confirmed.
+**Topics:**
+
+| Topic | Published by | Consumed by | Dead-letter |
+|---|---|---|---|
+| `media-uploaded` | `POST /media/confirm` | `consumeMedia` goroutine | `media-uploaded-dlq` |
+| `story-uploaded` | `POST /stories/confirm` | `consumeStories` goroutine | `story-uploaded-dlq` |
+
+**Producer:** serialises the event as JSON, injects the current OTel trace
+context into the message headers, and writes to the topic.
+
+**Consumer:** one goroutine per topic, each an infinite `FetchMessage` loop with
+**manual offset commits** (commit only after success → at-least-once delivery).
+Each message starts a child span from the header trace context. The
+`media-uploaded` handler runs `MediaProcessor.Process()` then
+`FeedService.FanoutFeedItem()` as a single retryable unit.
+
+**Failure handling:**
+- Transient failures retry with exponential backoff (1s, 2s, 4s; 3 attempts).
+- Exhausted or malformed messages are routed to `<topic>-dlq`, and the source
+  offset is committed **only after** the DLQ write succeeds — because a Kafka
+  commit advances the partition high-water mark, committing past an
+  un-dead-lettered message would silently lose it. The DLQ write is retried
+  until it succeeds (or shutdown).
+- On shutdown (context cancelled mid-process) the offset is left uncommitted so
+  the still-valid message replays on restart, rather than being dead-lettered.
+
+---
+
+### 7. Media Processor — `service/processor.go`
+
+Called by the consumer after a photo upload is confirmed.
 
 **For photos:**
+1. Downloads the original from S3
+2. Creates a **150×150 thumbnail** (center-cropped) with the `imaging` library
+3. Creates a **640×640 medium** version (fit within bounds)
+4. Uploads all three back to S3 at `{key}/thumb`, `{key}/medium`, `{key}/original`
 
-1. Downloads the original file from S3
-2. Creates a **150×150 thumbnail** (center-cropped) using the `imaging` library
-3. Creates a **640×640 medium** version (fit within bounds, no crop)
-4. Uploads all three back to S3 at:
-   - `{original_key}/thumb`
-   - `{original_key}/medium`
-   - `{original_key}/original`
+**For videos:** logs "transcoding queued" — not yet implemented.
 
-**For videos:** logs "transcoding queued" — actual transcoding is not yet implemented.
-
-Every step is wrapped in an OTel span so the full processing pipeline is visible in Jaeger.
+Every step is wrapped in an OTel span, so the pipeline is visible in Jaeger.
 
 ---
 
-### 7. Stories — `service/story.go` + `handler/story.go`
+### 8. Stories — `service/story.go` + `handler/story.go`
 
-Same two-step presign flow as media, but stories have a **24-hour TTL**.
+Same two-step presign flow as media, with a **24-hour TTL**.
 
 | Endpoint | Description |
 |---|---|
-| `POST /stories/presigned-url` | Generates S3 key under `stories/{user_id}/{story_id}/`, returns presigned URL |
-| `POST /stories/confirm` | Marks story active, sets `expires_at = now + 24h`, publishes Kafka event |
-| `GET /stories/{id}` | Returns story only if active (confirmed and not expired) |
-| `GET /stories/user/{user_id}` | Returns all active stories for a user |
+| `POST /stories/presigned-url` | Presigned URL under `stories/{user_id}/{story_id}/` |
+| `POST /stories/confirm` | Marks active, sets `expires_at = now + 24h`, publishes event |
+| `GET /stories/{id}` | Returns the story only if active (confirmed, not expired) |
+| `GET /stories/user/{user_id}` | All active stories for a user |
 
-A **background worker** (`StartExpiryWorker`) ticks every 5 minutes and deletes expired stories from memory. Pending stories (presigned but never confirmed) are auto-expired after 30 minutes.
-
----
-
-### 8. Feed — `service/feed.go` + `handler/feed.go`
-
-The feed is populated **asynchronously** by the Kafka consumer — not inline during the HTTP confirm request. When `POST /media/confirm` is called, the HTTP response returns immediately. The Kafka message is consumed in the background and `AddFeedItem` is called separately.
-
-`GET /feed/{user_id}` returns paginated feed items sorted by `created_at` descending (newest first). Supports `?limit=` and `?offset=` query params. Only the authenticated user can fetch their own feed.
+A background cleanup worker periodically deletes pending uploads that were never
+confirmed within the TTL window and physically removes expired stories.
 
 ---
 
-### 9. Observability
+### 9. Social Graph — follows, likes, comments
 
-**Structured logging** — `slog` with JSON output. No `fmt.Println` or bare `log.Printf`.
+**Follows** (`store/follow_store.go`, `service/follow.go`, `handler/follow.go`):
+follow/unfollow and followers/following listings. The `follows` table has a
+composite PK and a `no_self_follow` check constraint; follow is idempotent via
+`ON CONFLICT DO NOTHING`. `GetFollowers` drives feed fan-out.
 
-**Distributed tracing** — OTel traces flow through the full request lifecycle:
+**Likes** (`*_store.go` / `like.go`): idempotent like/unlike on media, plus a
+status query returning `{ count, liked }`. FK violations map to "media not found".
+
+**Comments** (`comment.go`): create (body trimmed, validated ≤ 2200 chars),
+list newest-first, and delete. Delete is scoped by `media_id` **and** owner, so
+a user can only remove their own comment and only under the correct media.
+
+Postgres error codes are detected centrally by helpers in `store/errors.go`
+(`23505` unique, `23503` foreign key, `23514` check). Stores translate them into
+domain errors (e.g. `ErrUserNotFound`, `ErrMediaNotFound`), which services and
+handlers then map to HTTP statuses (404, 409, 400).
+
+---
+
+### 10. Feed — `store/feed_store.go` + `service/feed.go` + `handler/feed.go`
+
+The feed is a per-user Redis sorted set `feed:{userID}`, scored by upload time
+(`CreatedAt.UnixMilli()` with a CRC32 tie-breaker suffix). It is built
+**fan-out-on-write**: when media is processed, `FanoutFeedItem` writes the item
+into the author's feed and every follower's feed (capped at 1000 items each).
+This happens inside the Kafka consumer, so it inherits the retry/DLQ guarantees.
+
+`GET /feed/{user_id}` returns items newest-first using a **compound cursor**
+(`score + media_id`) instead of an offset — paging through it never skips or
+duplicates items, even when two uploads share a millisecond. The response
+carries a `next_cursor` (empty when exhausted). Only the authenticated user can
+read their own feed.
+
+A `nil` follower-lister disables fan-out (author-only feed), which keeps the
+feed service unit-testable without Postgres.
+
+---
+
+### 11. Observability
+
+**Structured logging** — `slog` with JSON output throughout.
+
+**Distributed tracing** — OTel trace context flows through the full lifecycle:
 
 ```
 HTTP request → handler span
@@ -166,9 +235,11 @@ HTTP request → handler span
         → processPhoto span
 ```
 
-Visible in Jaeger at `http://localhost:16686`.
+Visible in Jaeger at <http://localhost:16686>.
 
-**Metrics** — Prometheus counters and histograms exposed at `/metrics`, scraped every 15s, visualised in Grafana at `http://localhost:3000`.
+**Metrics** — Prometheus counters/histograms at `/metrics` (including
+`kafka_messages_consumed_total` with `ok`/`error`/`dlq_error`/`commit_error`
+statuses), scraped every 15s and visualised in Grafana.
 
 ---
 
@@ -177,6 +248,8 @@ Visible in Jaeger at `http://localhost:16686`.
 | Service | Port | Purpose |
 |---|---|---|
 | App | 8080 | The Go API |
+| Postgres | 5432 | Structured data |
+| Redis | 6379 | Feed + rate-limit counters |
 | MinIO | 9000 / 9001 | Local S3 (API / Browser UI) |
 | Kafka | 9092 | Event bus |
 | Kafka UI | 8090 | Browse topics and messages |
@@ -186,35 +259,10 @@ Visible in Jaeger at `http://localhost:16686`.
 
 ---
 
-## Request Lifecycle — Photo Upload
+## Persistence
 
-```
-Client
-  │
-  ├─ POST /presigned-url ──► handler ──► Storage.GeneratePresignedURL
-  │                                         ├─ media stored in memory (status: pending)
-  │                                         └─ returns upload_url (localhost:9000)
-  │
-  ├─ PUT localhost:9000/... ──► MinIO directly (app server not involved)
-  │
-  ├─ POST /media/confirm ──► handler ──► Storage.ConfirmMediaUploaded
-  │                                         ├─ status = uploaded, uploaded_at = now
-  │                                         └─ KafkaProducer.PublishMediaUploaded
-  │                                               └─ media-uploaded topic
-  │
-  └─ (async, in background)
-       KafkaConsumer reads media-uploaded
-         ├─ MediaProcessor.Process
-         │     ├─ download original from MinIO
-         │     ├─ generate 150×150 thumb
-         │     ├─ generate 640×640 medium
-         │     └─ upload 3 variants back to MinIO
-         └─ FeedService.AddFeedItem
-               └─ media appears in GET /feed/{user_id}
-```
-
----
-
-## Current Limitations
-
-Everything is stored **in-memory** — users, media, stories, and feed items. Restarting the app wipes all data. In a production service these would be backed by a database (Postgres for structured data, Redis for the feed cache).
+All durable state lives in Postgres (users, media, stories, follows, likes,
+comments) and Redis (feed sorted sets, rate-limit counters); media bytes live in
+S3/MinIO. The app is stateless and can be restarted or scaled horizontally
+without data loss. Schema changes are versioned in `internal/migrations/` and
+applied automatically on startup via golang-migrate.

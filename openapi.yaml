@@ -132,7 +132,7 @@ components:
         expires_at:
           type: string
           format: date-time
-          description: Stories expire 24 hours after creation
+          description: Set on confirmation; stories expire 24 hours after confirmation
 
     StoryPresignedURLResponse:
       type: object
@@ -186,12 +186,68 @@ components:
         limit:
           type: integer
           example: 20
-        offset:
-          type: integer
-          example: 0
-        total:
+        next_cursor:
+          type: string
+          description: >
+            Opaque cursor for the next page. Pass it back as the `cursor` query
+            parameter to fetch the following page. Empty/omitted when there are
+            no more pages.
+          example: eyJzIjoxNzE2OTk5OTk5MDAwLCJtIjoiZjNkYWRlODEifQ
+
+    FollowListResponse:
+      type: object
+      description: Returned by the followers/following endpoints.
+      properties:
+        user_ids:
+          type: array
+          items:
+            type: string
+          example: ["8099076697c49c7646f8d51a16288190"]
+        count:
           type: integer
           example: 1
+
+    LikeStatusResponse:
+      type: object
+      properties:
+        media_id:
+          type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        count:
+          type: integer
+          description: Total number of likes on the media item
+          example: 42
+        liked:
+          type: boolean
+          description: Whether the authenticated user has liked this media
+          example: true
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: string
+          example: c0ffee00c0ffee00c0ffee00c0ffee00
+        media_id:
+          type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        user_id:
+          type: string
+          example: 8099076697c49c7646f8d51a16288190
+        body:
+          type: string
+          example: Great shot!
+        created_at:
+          type: string
+          format: date-time
+
+    CommentListResponse:
+      type: object
+      properties:
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
 
 security:
   - bearerAuth: []
@@ -409,7 +465,7 @@ paths:
       summary: Generate a presigned S3 URL for a story upload
       description: |
         Same two-step flow as media: get a URL here, PUT the file directly to S3,
-        then call `POST /stories/confirm`. Stories expire 24 hours after creation.
+        then call `POST /stories/confirm`. Stories expire 24 hours after confirmation.
       requestBody:
         required: true
         content:
@@ -553,8 +609,9 @@ paths:
       tags: [Feed]
       summary: Get the media feed for a user
       description: |
-        Returns paginated feed items. Only the authenticated user can fetch their own feed.
-        Feed is populated asynchronously after `POST /media/confirm` via Kafka.
+        Returns cursor-paginated feed items, newest first. Only the authenticated
+        user can fetch their own feed. The feed is populated asynchronously after
+        `POST /media/confirm` via Kafka (fan-out to the author and their followers).
       parameters:
         - name: user_id
           in: path
@@ -568,12 +625,13 @@ paths:
             type: integer
             default: 20
           description: Max number of items to return
-        - name: offset
+        - name: cursor
           in: query
           schema:
-            type: integer
-            default: 0
-          description: Number of items to skip
+            type: string
+          description: >
+            Opaque pagination cursor from a previous response's `next_cursor`.
+            Omit for the first page.
       responses:
         '200':
           description: Paginated feed
@@ -581,8 +639,315 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FeedResponse'
+        '400':
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Cannot access another user's feed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Follows ───────────────────────────────────────────────────────────────
+
+  /follows/{user_id}:
+    post:
+      tags: [Follows]
+      summary: Follow a user
+      description: >
+        Follow the user identified by `user_id`. The follower is the
+        authenticated user. Idempotent — following someone already followed
+        succeeds with no change.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The user to follow (followee)
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+      responses:
+        '204':
+          description: Followed (or already following)
+        '400':
+          description: Cannot follow yourself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Follows]
+      summary: Unfollow a user
+      description: Idempotent — unfollowing someone not followed succeeds.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The user to unfollow (followee)
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+      responses:
+        '204':
+          description: Unfollowed (or was not following)
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /follows/{user_id}/followers:
+    get:
+      tags: [Follows]
+      summary: List a user's followers
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+      responses:
+        '200':
+          description: List of follower user IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowListResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /follows/{user_id}/following:
+    get:
+      tags: [Follows]
+      summary: List who a user follows
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 8099076697c49c7646f8d51a16288190
+      responses:
+        '200':
+          description: List of followed user IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowListResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Likes ─────────────────────────────────────────────────────────────────
+
+  /likes/{media_id}:
+    put:
+      tags: [Likes]
+      summary: Like a media item
+      description: Idempotent — liking an already-liked item succeeds with no change.
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+      responses:
+        '204':
+          description: Liked (or already liked)
+        '404':
+          description: Media not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Likes]
+      summary: Unlike a media item
+      description: Idempotent — unliking an item not liked succeeds.
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+      responses:
+        '204':
+          description: Unliked (or was not liked)
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [Likes]
+      summary: Get like count and the caller's like status
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+      responses:
+        '200':
+          description: Like status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LikeStatusResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Comments ──────────────────────────────────────────────────────────────
+
+  /comments/{media_id}:
+    post:
+      tags: [Comments]
+      summary: Add a comment to a media item
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body:
+                  type: string
+                  maxLength: 2200
+                  example: Great shot!
+      responses:
+        '201':
+          description: Comment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          description: Empty or too-long comment body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Media not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [Comments]
+      summary: List comments on a media item
+      description: Returns comments newest first.
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+          description: Max number of comments to return
+      responses:
+        '200':
+          description: List of comments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentListResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /comments/{media_id}/{comment_id}:
+    delete:
+      tags: [Comments]
+      summary: Delete a comment
+      description: >
+        Deletes the comment. Scoped by media, comment ID, and owner — a user can
+        only delete their own comment, and only under the correct media item.
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f3dade81111d883bc43c25eaf2e16787
+        - name: comment_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: c0ffee00c0ffee00c0ffee00c0ffee00
+      responses:
+        '204':
+          description: Comment deleted
+        '404':
+          description: Comment not found, not owned by the caller, or not under this media
           content:
             application/json:
               schema:
