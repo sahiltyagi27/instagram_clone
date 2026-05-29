@@ -231,3 +231,29 @@ func TestCommentHandlerDeleteOtherUsersCommentForbidden(t *testing.T) {
 	}
 	assertErrorResponse(t, rec, "comment not found")
 }
+
+func TestCommentHandlerDeleteWrongMediaIDNotFound(t *testing.T) {
+	pool := newSocialPGPool(t)
+	router := NewCommentHandler(service.NewCommentService(store.NewCommentStore(pool))).Router()
+
+	rec := performRequest(router, http.MethodPost, "/media_1", `{"body":"mine"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var created model.Comment
+	decodeResponse(t, rec, &created)
+
+	// Deleting one's own comment via a URL with the wrong media id must not
+	// succeed: the delete is scoped to media_id as well as owner.
+	rec = performRequest(router, http.MethodDelete, "/media_other/"+created.ID, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete-wrong-media status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	assertErrorResponse(t, rec, "comment not found")
+
+	// And it should still be deletable under the correct media id.
+	rec = performRequest(router, http.MethodDelete, "/media_1/"+created.ID, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete-correct-media status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}

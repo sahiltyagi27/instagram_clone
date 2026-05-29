@@ -140,9 +140,6 @@ func main() {
 		r.Use(middleware.RateLimit(rateLimiter, "write", redis_rate.PerMinute(20)))
 		r.Mount("/", handler.NewUploadHandler(storage, producer).Router())
 		r.Mount("/stories", handler.NewStoryHandler(storyService, producer).Router())
-		r.Mount("/follows", handler.NewFollowHandler(followService).Router())
-		r.Mount("/likes", handler.NewLikeHandler(likeService).Router())
-		r.Mount("/comments", handler.NewCommentHandler(commentService).Router())
 	})
 
 	// Read operations: more lenient limit (60 req/min per user).
@@ -151,6 +148,18 @@ func main() {
 		r.Use(middleware.JWT(jwtSecret))
 		r.Use(middleware.RateLimit(rateLimiter, "read", redis_rate.PerMinute(60)))
 		r.Mount("/feed", handler.NewFeedHandler(feedService).Router())
+	})
+
+	// Social resources mix reads and writes on the same path prefixes, so they
+	// can't be split across the read/write groups by mounting. Instead a single
+	// group charges each request to the matching budget by method: mutating
+	// requests to the write budget (20/min), GETs to the read budget (60/min).
+	router.Group(func(r chi.Router) {
+		r.Use(middleware.JWT(jwtSecret))
+		r.Use(middleware.RateLimitByMethod(rateLimiter, redis_rate.PerMinute(20), redis_rate.PerMinute(60)))
+		r.Mount("/follows", handler.NewFollowHandler(followService).Router())
+		r.Mount("/likes", handler.NewLikeHandler(likeService).Router())
+		r.Mount("/comments", handler.NewCommentHandler(commentService).Router())
 	})
 
 	// Wrap the entire router with OTel HTTP tracing.

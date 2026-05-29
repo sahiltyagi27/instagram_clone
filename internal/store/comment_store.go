@@ -63,12 +63,13 @@ func (s *CommentStore) ListByMedia(ctx context.Context, mediaID string, limit in
 	return comments, rows.Err()
 }
 
-// Delete removes a comment owned by userID. Returns ErrCommentNotFound if no
-// matching comment exists for that owner (missing or owned by someone else).
-func (s *CommentStore) Delete(ctx context.Context, commentID, userID string) error {
+// Delete removes a comment owned by userID under mediaID. Returns
+// ErrCommentNotFound if no matching comment exists (missing, owned by someone
+// else, or not under that media item).
+func (s *CommentStore) Delete(ctx context.Context, mediaID, commentID, userID string) error {
 	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM comments WHERE id = $1 AND user_id = $2`,
-		commentID, userID,
+		DELETE FROM comments WHERE id = $1 AND media_id = $2 AND user_id = $3`,
+		commentID, mediaID, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)

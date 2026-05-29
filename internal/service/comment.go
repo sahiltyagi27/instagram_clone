@@ -72,10 +72,11 @@ func (s *CommentService) List(ctx context.Context, mediaID string, limit int) (m
 	return model.CommentListResponse{Comments: comments}, nil
 }
 
-// Delete removes a comment owned by userID. Returns ErrCommentNotFound if the
-// comment is missing or owned by another user.
-func (s *CommentService) Delete(ctx context.Context, commentID, userID string) error {
-	if err := s.comments.Delete(ctx, commentID, userID); err != nil {
+// Delete removes a comment owned by userID under mediaID. Returns
+// ErrCommentNotFound if the comment is missing, owned by another user, or not
+// under that media item.
+func (s *CommentService) Delete(ctx context.Context, mediaID, commentID, userID string) error {
+	if err := s.comments.Delete(ctx, mediaID, commentID, userID); err != nil {
 		if errors.Is(err, store.ErrCommentNotFound) {
 			return ErrCommentNotFound
 		}

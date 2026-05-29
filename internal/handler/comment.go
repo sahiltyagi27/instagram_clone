@@ -84,13 +84,18 @@ func (h *CommentHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing authenticated user")
 		return
 	}
+	mediaID := strings.TrimSpace(chi.URLParam(r, "media_id"))
+	if mediaID == "" {
+		writeError(w, http.StatusBadRequest, "media id is required")
+		return
+	}
 	commentID := strings.TrimSpace(chi.URLParam(r, "comment_id"))
 	if commentID == "" {
 		writeError(w, http.StatusBadRequest, "comment id is required")
 		return
 	}
 
-	if err := h.comments.Delete(r.Context(), commentID, userID); err != nil {
+	if err := h.comments.Delete(r.Context(), mediaID, commentID, userID); err != nil {
 		if errors.Is(err, service.ErrCommentNotFound) {
 			writeError(w, http.StatusNotFound, "comment not found")
 			return
