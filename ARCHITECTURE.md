@@ -195,8 +195,10 @@ status query returning `{ count, liked }`. FK violations map to "media not found
 list newest-first, and delete. Delete is scoped by `media_id` **and** owner, so
 a user can only remove their own comment and only under the correct media.
 
-Postgres error codes are translated centrally in `store/errors.go`
-(`23505` unique → 409, `23503` FK → 404, `23514` check → 400).
+Postgres error codes are detected centrally by helpers in `store/errors.go`
+(`23505` unique, `23503` foreign key, `23514` check). Stores translate them into
+domain errors (e.g. `ErrUserNotFound`, `ErrMediaNotFound`), which services and
+handlers then map to HTTP statuses (404, 409, 400).
 
 ---
 

@@ -132,7 +132,7 @@ components:
         expires_at:
           type: string
           format: date-time
-          description: Stories expire 24 hours after creation
+          description: Set on confirmation; stories expire 24 hours after confirmation
 
     StoryPresignedURLResponse:
       type: object
@@ -465,7 +465,7 @@ paths:
       summary: Generate a presigned S3 URL for a story upload
       description: |
         Same two-step flow as media: get a URL here, PUT the file directly to S3,
-        then call `POST /stories/confirm`. Stories expire 24 hours after creation.
+        then call `POST /stories/confirm`. Stories expire 24 hours after confirmation.
       requestBody:
         required: true
         content:
