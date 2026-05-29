@@ -14,7 +14,8 @@ import (
 
 // newSocialPGPool connects to Postgres and seeds two users (user_123, the
 // authenticated caller, and other_user) plus one media row owned by user_123.
-// It cleans up every social table on completion so tests stay isolated.
+// On completion it deletes only the rows it owns so it stays isolated from
+// other packages' fixtures during a parallel `go test ./...` run.
 func newSocialPGPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	const dsn = "postgres://postgres:postgres@localhost:5432/instagram_clone"
@@ -37,12 +38,15 @@ func newSocialPGPool(t *testing.T) *pgxpool.Pool {
 		('media_1', 'user_123', 'photo', 'ready', 'p.jpg', 'image/jpeg', 'b', 'k')
 		ON CONFLICT DO NOTHING`)
 
+	// Clean up only the rows this helper owns. A wholesale DELETE FROM users /
+	// media would race other packages' tests (e.g. store tests seed
+	// media_test_user) since `go test ./...` runs packages in parallel.
 	t.Cleanup(func() {
-		pool.Exec(ctx, "DELETE FROM comments")
-		pool.Exec(ctx, "DELETE FROM likes")
-		pool.Exec(ctx, "DELETE FROM follows")
-		pool.Exec(ctx, "DELETE FROM media")
-		pool.Exec(ctx, "DELETE FROM users")
+		pool.Exec(ctx, "DELETE FROM comments WHERE media_id = 'media_1' OR user_id IN ('user_123', 'other_user')")
+		pool.Exec(ctx, "DELETE FROM likes WHERE media_id = 'media_1' OR user_id IN ('user_123', 'other_user')")
+		pool.Exec(ctx, "DELETE FROM follows WHERE follower_id IN ('user_123', 'other_user') OR followee_id IN ('user_123', 'other_user')")
+		pool.Exec(ctx, "DELETE FROM media WHERE id = 'media_1'")
+		pool.Exec(ctx, "DELETE FROM users WHERE id IN ('user_123', 'other_user')")
 		pool.Close()
 	})
 	return pool
