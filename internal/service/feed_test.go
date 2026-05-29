@@ -24,7 +24,7 @@ func newTestFeedService(t *testing.T) *FeedService {
 		client.Del(context.Background(), "feed:user_123", "feed:other")
 		_ = client.Close()
 	})
-	return NewFeedService(store.NewFeedStore(client))
+	return NewFeedService(store.NewFeedStore(client), nil)
 }
 
 func TestFeedServiceGetFeedSortsAndPaginates(t *testing.T) {

@@ -75,6 +75,9 @@ func main() {
 	mediaStore := store.NewMediaStore(pgPool)
 	storyStore := store.NewStoryStore(pgPool)
 	feedStore := store.NewFeedStore(redisClient)
+	followStore := store.NewFollowStore(pgPool)
+	likeStore := store.NewLikeStore(pgPool)
+	commentStore := store.NewCommentStore(pgPool)
 
 	// ── S3 / MinIO ────────────────────────────────────────────────────────────
 	storage, err := service.NewStorage(
@@ -100,7 +103,10 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authService := service.NewAuthService(jwtSecret, userStore)
 	storyService := service.NewStoryService(storage, storyStore)
-	feedService := service.NewFeedService(feedStore)
+	followService := service.NewFollowService(followStore)
+	feedService := service.NewFeedService(feedStore, followStore)
+	likeService := service.NewLikeService(likeStore)
+	commentService := service.NewCommentService(commentStore)
 	mediaProcessor := service.NewMediaProcessor(storage)
 
 	// ── Kafka ─────────────────────────────────────────────────────────────────
@@ -142,6 +148,18 @@ func main() {
 		r.Use(middleware.JWT(jwtSecret))
 		r.Use(middleware.RateLimit(rateLimiter, "read", redis_rate.PerMinute(60)))
 		r.Mount("/feed", handler.NewFeedHandler(feedService).Router())
+	})
+
+	// Social resources mix reads and writes on the same path prefixes, so they
+	// can't be split across the read/write groups by mounting. Instead a single
+	// group charges each request to the matching budget by method: mutating
+	// requests to the write budget (20/min), GETs to the read budget (60/min).
+	router.Group(func(r chi.Router) {
+		r.Use(middleware.JWT(jwtSecret))
+		r.Use(middleware.RateLimitByMethod(rateLimiter, redis_rate.PerMinute(20), redis_rate.PerMinute(60)))
+		r.Mount("/follows", handler.NewFollowHandler(followService).Router())
+		r.Mount("/likes", handler.NewLikeHandler(likeService).Router())
+		r.Mount("/comments", handler.NewCommentHandler(commentService).Router())
 	})
 
 	// Wrap the entire router with OTel HTTP tracing.
