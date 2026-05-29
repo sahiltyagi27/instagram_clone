@@ -83,11 +83,18 @@ func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 	storage := newTestStorage(t)
 	resp := mustGeneratePresignedURL(t, storage, "user_123")
 
+	// UploadedAt is stamped by Postgres NOW(), whose clock can drift from this
+	// test host's clock by a small amount. Compare against the confirm window
+	// with a tolerance on both ends rather than requiring UploadedAt to fall
+	// strictly after a host-captured instant, which races on sub-millisecond
+	// skew.
+	const clockSkew = 5 * time.Second
 	beforeConfirm := time.Now().UTC()
 	media, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
 	if err != nil {
 		t.Fatalf("ConfirmMediaUploaded returned error: %v", err)
 	}
+	afterConfirm := time.Now().UTC()
 
 	if media.Status != model.MediaStatusUploaded {
 		t.Fatalf("status = %q, want uploaded", media.Status)
@@ -95,8 +102,10 @@ func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 	if media.UploadedAt == nil {
 		t.Fatal("expected UploadedAt to be set")
 	}
-	if media.UploadedAt.Before(beforeConfirm) {
-		t.Fatalf("UploadedAt = %s, want after %s", media.UploadedAt, beforeConfirm)
+	// Fresh: stamped around the confirm call, allowing for clock skew between
+	// the test host and the database server.
+	if media.UploadedAt.Before(beforeConfirm.Add(-clockSkew)) || media.UploadedAt.After(afterConfirm.Add(clockSkew)) {
+		t.Fatalf("UploadedAt = %s, want within %s of the confirm window [%s, %s]", media.UploadedAt, clockSkew, beforeConfirm, afterConfirm)
 	}
 
 	stored, err := storage.GetMedia(context.Background(), resp.MediaID)
