@@ -26,9 +26,12 @@ func newTestPGPool(t *testing.T) *pgxpool.Pool {
 		}
 		t.Skip("postgres unavailable, skipping")
 	}
+	// Scoped to this package's fixtures (user_123/other_user and the auth test's
+	// email) rather than wholesale deletes, so it is safe to run in parallel
+	// with other packages' tests against the shared database.
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM stories")
-		pool.Exec(context.Background(), "DELETE FROM users")
+		pool.Exec(context.Background(), "DELETE FROM stories WHERE user_id IN ('user_123', 'other_user')")
+		pool.Exec(context.Background(), "DELETE FROM users WHERE id IN ('user_123', 'other_user') OR email = 'sahil@example.com'")
 		pool.Close()
 	})
 	return pool

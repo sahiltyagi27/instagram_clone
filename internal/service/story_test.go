@@ -28,13 +28,15 @@ func newTestStoryService(t *testing.T) *StoryService {
 	// Seed a test user to satisfy the foreign key on stories.user_id.
 	pool.Exec(context.Background(), `
 		INSERT INTO users (id, username, email, password_hash) VALUES
-		('user_123', 'test', 'test@example.com', 'x')
+		('svc_user_123', 'test', 'svc-test@example.com', 'x')
 		ON CONFLICT DO NOTHING`)
 
-	pool.Exec(context.Background(), "DELETE FROM stories")
+	// Scoped (not wholesale) cleanup so this is safe to run in parallel with
+	// other packages' tests against the shared database.
+	pool.Exec(context.Background(), "DELETE FROM stories WHERE user_id = 'svc_user_123'")
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM stories")
-		pool.Exec(context.Background(), "DELETE FROM users WHERE id = 'user_123'")
+		pool.Exec(context.Background(), "DELETE FROM stories WHERE user_id = 'svc_user_123'")
+		pool.Exec(context.Background(), "DELETE FROM users WHERE id = 'svc_user_123'")
 		pool.Close()
 	})
 
@@ -54,7 +56,7 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 	stories := newTestStoryService(t)
 
 	resp, err := stories.GeneratePresignedURL(context.Background(), model.StoryPresignedURLRequest{
-		UserID:      "user_123",
+		UserID:      "svc_user_123",
 		FileName:    "../story.jpg",
 		ContentType: "image/jpeg",
 	})
@@ -64,16 +66,16 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 	if resp.StoryID == "" {
 		t.Fatal("expected story id")
 	}
-	if resp.S3Key != "stories/user_123/"+resp.StoryID+"/story.jpg" {
+	if resp.S3Key != "stories/svc_user_123/"+resp.StoryID+"/story.jpg" {
 		t.Fatalf("S3Key = %q, want sanitized story key", resp.S3Key)
 	}
 
 	// Story is not yet confirmed — should not appear as active.
-	if active := stories.GetActiveStoriesByUser(context.Background(), "user_123"); len(active) != 0 {
+	if active := stories.GetActiveStoriesByUser(context.Background(), "svc_user_123"); len(active) != 0 {
 		t.Fatalf("active stories before confirm = %d, want 0", len(active))
 	}
 
-	story, err := stories.ConfirmUpload(context.Background(), "user_123", resp.StoryID)
+	story, err := stories.ConfirmUpload(context.Background(), "svc_user_123", resp.StoryID)
 	if err != nil {
 		t.Fatalf("ConfirmUpload returned error: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 		t.Fatalf("story id = %q, want %q", got.ID, resp.StoryID)
 	}
 
-	active := stories.GetActiveStoriesByUser(context.Background(), "user_123")
+	active := stories.GetActiveStoriesByUser(context.Background(), "svc_user_123")
 	if len(active) != 1 {
 		t.Fatalf("active stories after confirm = %d, want 1", len(active))
 	}
@@ -98,7 +100,7 @@ func TestStoryServiceGenerateConfirmAndFetchActiveStories(t *testing.T) {
 func TestStoryServiceNotFoundPaths(t *testing.T) {
 	stories := newTestStoryService(t)
 
-	_, err := stories.ConfirmUpload(context.Background(), "user_123", "missing")
+	_, err := stories.ConfirmUpload(context.Background(), "svc_user_123", "missing")
 	if !errors.Is(err, ErrStoryNotFound) {
 		t.Fatalf("ConfirmUpload error = %v, want ErrStoryNotFound", err)
 	}

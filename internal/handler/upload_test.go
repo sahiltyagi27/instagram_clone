@@ -226,15 +226,17 @@ func newTestRouter(t *testing.T) http.Handler {
 		t.Skip("postgres unavailable, skipping")
 	}
 	ctx := context.Background()
-	// Clear any leftover data. Delete media before users due to FK constraint.
-	pool.Exec(ctx, "DELETE FROM media")
+	// Clear leftover data scoped to this package's fixture user (not wholesale),
+	// so it is safe to run in parallel with other packages against the shared DB.
+	// Delete media before users due to the FK constraint.
+	pool.Exec(ctx, "DELETE FROM media WHERE user_id = 'user_123'")
 	pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
 	// Seed the test user that media rows will reference via FK.
 	pool.Exec(ctx, `INSERT INTO users (id, username, email, password_hash, created_at)
 		VALUES ('user_123', 'testuser', 'test@example.com', 'testhash', NOW())
 		ON CONFLICT (id) DO NOTHING`)
 	t.Cleanup(func() {
-		pool.Exec(ctx, "DELETE FROM media")
+		pool.Exec(ctx, "DELETE FROM media WHERE user_id = 'user_123'")
 		pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
 		pool.Close()
 	})
