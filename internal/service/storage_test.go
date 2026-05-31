@@ -18,7 +18,7 @@ func TestGeneratePresignedUploadURLStoresPendingMedia(t *testing.T) {
 	storage := newTestStorage(t)
 
 	resp, err := storage.GeneratePresignedUploadURL(context.Background(), model.PresignedURLRequest{
-		UserID:      "user_123",
+		UserID:      "svc_user_123",
 		FileName:    "../sunset.jpg",
 		ContentType: "image/jpeg",
 		MediaType:   model.MediaTypePhoto,
@@ -36,7 +36,7 @@ func TestGeneratePresignedUploadURLStoresPendingMedia(t *testing.T) {
 	if resp.S3Bucket != "instagram-media-test" {
 		t.Fatalf("S3Bucket = %q, want instagram-media-test", resp.S3Bucket)
 	}
-	wantKeyPrefix := "users/user_123/" + resp.MediaID + "/"
+	wantKeyPrefix := "users/svc_user_123/" + resp.MediaID + "/"
 	if !strings.HasPrefix(resp.S3Key, wantKeyPrefix) {
 		t.Fatalf("S3Key = %q, want prefix %q", resp.S3Key, wantKeyPrefix)
 	}
@@ -81,7 +81,7 @@ func TestGeneratePresignedUploadURLStoresPendingMedia(t *testing.T) {
 
 func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 	storage := newTestStorage(t)
-	resp := mustGeneratePresignedURL(t, storage, "user_123")
+	resp := mustGeneratePresignedURL(t, storage, "svc_user_123")
 
 	// UploadedAt is stamped by Postgres NOW(), whose clock can drift from this
 	// test host's clock by a small amount. Compare against the confirm window
@@ -90,7 +90,7 @@ func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 	// skew.
 	const clockSkew = 5 * time.Second
 	beforeConfirm := time.Now().UTC()
-	media, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
+	media, err := storage.ConfirmMediaUploaded(context.Background(), "svc_user_123", resp.MediaID)
 	if err != nil {
 		t.Fatalf("ConfirmMediaUploaded returned error: %v", err)
 	}
@@ -119,15 +119,15 @@ func TestConfirmMediaUploadedMarksMediaUploaded(t *testing.T) {
 
 func TestConfirmMediaUploadedIsIdempotent(t *testing.T) {
 	storage := newTestStorage(t)
-	resp := mustGeneratePresignedURL(t, storage, "user_123")
+	resp := mustGeneratePresignedURL(t, storage, "svc_user_123")
 
-	first, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
+	first, err := storage.ConfirmMediaUploaded(context.Background(), "svc_user_123", resp.MediaID)
 	if err != nil {
 		t.Fatalf("first ConfirmMediaUploaded returned error: %v", err)
 	}
 
 	// Second confirmation of the same media ID must succeed and return the same record.
-	second, err := storage.ConfirmMediaUploaded(context.Background(), "user_123", resp.MediaID)
+	second, err := storage.ConfirmMediaUploaded(context.Background(), "svc_user_123", resp.MediaID)
 	if err != nil {
 		t.Fatalf("second ConfirmMediaUploaded returned error: %v", err)
 	}
@@ -142,14 +142,14 @@ func TestConfirmMediaUploadedIsIdempotent(t *testing.T) {
 
 func TestConfirmMediaUploadedReturnsNotFoundForMissingOrWrongUser(t *testing.T) {
 	storage := newTestStorage(t)
-	resp := mustGeneratePresignedURL(t, storage, "user_123")
+	resp := mustGeneratePresignedURL(t, storage, "svc_user_123")
 
 	tests := []struct {
 		name    string
 		userID  string
 		mediaID string
 	}{
-		{name: "missing media", userID: "user_123", mediaID: "missing"},
+		{name: "missing media", userID: "svc_user_123", mediaID: "missing"},
 		{name: "wrong user", userID: "other_user", mediaID: resp.MediaID},
 	}
 
@@ -220,16 +220,18 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	ctx := context.Background()
-	// Clear any leftover data. Delete media before users due to FK constraint.
-	pool.Exec(ctx, "DELETE FROM media")
-	pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
+	// Clear any leftover data scoped to this package's fixtures. Delete media
+	// before users due to the FK constraint. Scoped (not wholesale) so this can
+	// run in parallel with other packages' tests against the shared database.
+	pool.Exec(ctx, "DELETE FROM media WHERE user_id = 'svc_user_123'")
+	pool.Exec(ctx, "DELETE FROM users WHERE id = 'svc_user_123'")
 	// Seed the test user that media rows will reference via FK.
 	pool.Exec(ctx, `INSERT INTO users (id, username, email, password_hash, created_at)
-		VALUES ('user_123', 'testuser', 'test@example.com', 'testhash', NOW())
+		VALUES ('svc_user_123', 'testuser', 'svc-test@example.com', 'testhash', NOW())
 		ON CONFLICT (id) DO NOTHING`)
 	t.Cleanup(func() {
-		pool.Exec(ctx, "DELETE FROM media")
-		pool.Exec(ctx, "DELETE FROM users WHERE id = 'user_123'")
+		pool.Exec(ctx, "DELETE FROM media WHERE user_id = 'svc_user_123'")
+		pool.Exec(ctx, "DELETE FROM users WHERE id = 'svc_user_123'")
 		pool.Close()
 	})
 	return pool

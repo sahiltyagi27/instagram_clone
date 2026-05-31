@@ -13,7 +13,7 @@ import (
 const testScope = "test"
 
 // newTestRateLimiter opens a Redis connection scoped to scope+userID.
-// The rate-limit key is flushed before the test starts AND after it finishes
+// The rate-limit key is reset before the test starts AND after it finishes
 // so leftover GCRA state from a previous run never bleeds into the next test.
 func newTestRateLimiter(t *testing.T, userID string) *redis_rate.Limiter {
 	t.Helper()
@@ -22,14 +22,18 @@ func newTestRateLimiter(t *testing.T, userID string) *redis_rate.Limiter {
 		_ = client.Close()
 		t.Skip("redis unavailable, skipping")
 	}
+	limiter := redis_rate.NewLimiter(client)
+	// The middleware calls Allow with this exact key; redis_rate stores it under
+	// an internal "rate:" prefix. Use limiter.Reset (which applies that prefix)
+	// rather than deleting the raw key — otherwise the real GCRA key survives
+	// and leftover state bleeds across runs against a persistent Redis.
 	key := "ratelimit:" + testScope + ":" + userID
-	// Pre-clean so a previous failed run cannot pollute this one.
-	client.Del(context.Background(), key)
+	_ = limiter.Reset(context.Background(), key)
 	t.Cleanup(func() {
-		client.Del(context.Background(), key)
+		_ = limiter.Reset(context.Background(), key)
 		_ = client.Close()
 	})
-	return redis_rate.NewLimiter(client)
+	return limiter
 }
 
 func okHandler() http.Handler {

@@ -21,7 +21,7 @@ func newTestFeedService(t *testing.T) *FeedService {
 		t.Skip("redis unavailable, skipping")
 	}
 	t.Cleanup(func() {
-		client.Del(context.Background(), "feed:user_123", "feed:other")
+		client.Del(context.Background(), "feed:svc_user_123", "feed:svc_other")
 		_ = client.Close()
 	})
 	return NewFeedService(store.NewFeedStore(client), nil)
@@ -32,13 +32,13 @@ func TestFeedServiceGetFeedSortsAndPaginates(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	feed.AddFeedItem(ctx, "user_123", model.FeedItem{MediaID: "old", UserID: "user_123", CreatedAt: now.Add(-time.Hour)})
-	feed.AddFeedItem(ctx, "user_123", model.FeedItem{MediaID: "new", UserID: "user_123", CreatedAt: now})
-	feed.AddFeedItem(ctx, "user_123", model.FeedItem{MediaID: "middle", UserID: "user_123", CreatedAt: now.Add(-time.Minute)})
-	feed.AddFeedItem(ctx, "other", model.FeedItem{MediaID: "other", UserID: "other", CreatedAt: now.Add(time.Hour)})
+	feed.AddFeedItem(ctx, "svc_user_123", model.FeedItem{MediaID: "old", UserID: "svc_user_123", CreatedAt: now.Add(-time.Hour)})
+	feed.AddFeedItem(ctx, "svc_user_123", model.FeedItem{MediaID: "new", UserID: "svc_user_123", CreatedAt: now})
+	feed.AddFeedItem(ctx, "svc_user_123", model.FeedItem{MediaID: "middle", UserID: "svc_user_123", CreatedAt: now.Add(-time.Minute)})
+	feed.AddFeedItem(ctx, "svc_other", model.FeedItem{MediaID: "other", UserID: "svc_other", CreatedAt: now.Add(time.Hour)})
 
 	// First page: limit=2 → newest two items ("new", "middle").
-	page1, err := feed.GetFeed(ctx, "user_123", 2, "")
+	page1, err := feed.GetFeed(ctx, "svc_user_123", 2, "")
 	if err != nil {
 		t.Fatalf("GetFeed page1 returned error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestFeedServiceGetFeedSortsAndPaginates(t *testing.T) {
 	}
 
 	// Second page using cursor → should return the remaining item ("old").
-	page2, err := feed.GetFeed(ctx, "user_123", 2, page1.NextCursor)
+	page2, err := feed.GetFeed(ctx, "svc_user_123", 2, page1.NextCursor)
 	if err != nil {
 		t.Fatalf("GetFeed page2 returned error: %v", err)
 	}
@@ -72,10 +72,10 @@ func TestFeedServicePaginationBoundaries(t *testing.T) {
 	feed := newTestFeedService(t)
 	ctx := context.Background()
 
-	feed.AddFeedItem(ctx, "user_123", model.FeedItem{MediaID: "media_1", UserID: "user_123", CreatedAt: time.Now().UTC()})
+	feed.AddFeedItem(ctx, "svc_user_123", model.FeedItem{MediaID: "media_1", UserID: "svc_user_123", CreatedAt: time.Now().UTC()})
 
 	// Default limit applied when limit=0.
-	defaulted, err := feed.GetFeed(ctx, "user_123", 0, "")
+	defaulted, err := feed.GetFeed(ctx, "svc_user_123", 0, "")
 	if err != nil {
 		t.Fatalf("GetFeed returned error: %v", err)
 	}
@@ -100,16 +100,16 @@ func TestFeedServiceConcurrentWrites(t *testing.T) {
 			defer wg.Done()
 			// Use a unique MediaID per item so the crc32 tie-breaker gives each
 			// concurrent upload a distinct score even within the same millisecond.
-			feed.AddFeedItem(ctx, "user_123", model.FeedItem{
+			feed.AddFeedItem(ctx, "svc_user_123", model.FeedItem{
 				MediaID:   fmt.Sprintf("media_%d", n),
-				UserID:    "user_123",
+				UserID:    "svc_user_123",
 				CreatedAt: time.Now().UTC(),
 			})
 		}(i)
 	}
 	wg.Wait()
 
-	resp, err := feed.GetFeed(ctx, "user_123", 100, "")
+	resp, err := feed.GetFeed(ctx, "svc_user_123", 100, "")
 	if err != nil {
 		t.Fatalf("GetFeed returned error: %v", err)
 	}

@@ -22,9 +22,12 @@ func newTestAuthService(t *testing.T) *AuthService {
 		}
 		t.Skip("postgres unavailable, skipping")
 	}
-	pool.Exec(context.Background(), "DELETE FROM users")
+	// Scoped to this package's fixture email (not a wholesale DELETE FROM users)
+	// so it is safe to run in parallel with other packages against the shared DB.
+	const fixtureEmail = "svc-sahil@example.com"
+	pool.Exec(context.Background(), "DELETE FROM users WHERE email = $1", fixtureEmail)
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM users")
+		pool.Exec(context.Background(), "DELETE FROM users WHERE email = $1", fixtureEmail)
 		pool.Close()
 	})
 	return NewAuthService("test-secret", store.NewUserStore(pool))
@@ -35,7 +38,7 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 
 	signup, err := auth.Signup(context.Background(), model.SignupRequest{
 		Username: "sahil",
-		Email:    "SAHIL@example.com",
+		Email:    "SVC-SAHIL@example.com",
 		Password: "secret123",
 	})
 	if err != nil {
@@ -44,7 +47,7 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 	if signup.User.ID == "" {
 		t.Fatal("expected user id")
 	}
-	if signup.User.Email != "sahil@example.com" {
+	if signup.User.Email != "svc-sahil@example.com" {
 		t.Fatalf("email = %q, want normalized email", signup.User.Email)
 	}
 	if signup.User.PasswordHash != "" {
@@ -59,7 +62,7 @@ func TestAuthServiceSignupLoginAndValidateToken(t *testing.T) {
 		t.Fatalf("token user id = %q, want %q", userID, signup.User.ID)
 	}
 
-	login, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "secret123"})
+	login, err := auth.Login(context.Background(), model.LoginRequest{Email: "svc-sahil@example.com", Password: "secret123"})
 	if err != nil {
 		t.Fatalf("Login returned error: %v", err)
 	}
@@ -73,16 +76,16 @@ func TestAuthServicePreservesPasswordWhitespace(t *testing.T) {
 
 	if _, err := auth.Signup(context.Background(), model.SignupRequest{
 		Username: "sahil",
-		Email:    "sahil@example.com",
+		Email:    "svc-sahil@example.com",
 		Password: " secret123 ",
 	}); err != nil {
 		t.Fatalf("Signup returned error: %v", err)
 	}
 
-	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "secret123"}); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "svc-sahil@example.com", Password: "secret123"}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("login without spaces error = %v, want ErrInvalidCredentials", err)
 	}
-	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: " secret123 "}); err != nil {
+	if _, err := auth.Login(context.Background(), model.LoginRequest{Email: "svc-sahil@example.com", Password: " secret123 "}); err != nil {
 		t.Fatalf("login with spaces returned error: %v", err)
 	}
 }
@@ -90,16 +93,16 @@ func TestAuthServicePreservesPasswordWhitespace(t *testing.T) {
 func TestAuthServiceRejectsDuplicateAndInvalidLogin(t *testing.T) {
 	auth := newTestAuthService(t)
 
-	if _, err := auth.Signup(context.Background(), model.SignupRequest{Username: "sahil", Email: "sahil@example.com", Password: "secret123"}); err != nil {
+	if _, err := auth.Signup(context.Background(), model.SignupRequest{Username: "sahil", Email: "svc-sahil@example.com", Password: "secret123"}); err != nil {
 		t.Fatalf("Signup returned error: %v", err)
 	}
 
-	_, err := auth.Signup(context.Background(), model.SignupRequest{Username: "other", Email: "sahil@example.com", Password: "secret123"})
+	_, err := auth.Signup(context.Background(), model.SignupRequest{Username: "other", Email: "svc-sahil@example.com", Password: "secret123"})
 	if !errors.Is(err, ErrUserAlreadyExists) {
 		t.Fatalf("duplicate signup error = %v, want ErrUserAlreadyExists", err)
 	}
 
-	_, err = auth.Login(context.Background(), model.LoginRequest{Email: "sahil@example.com", Password: "wrong"})
+	_, err = auth.Login(context.Background(), model.LoginRequest{Email: "svc-sahil@example.com", Password: "wrong"})
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("login error = %v, want ErrInvalidCredentials", err)
 	}
